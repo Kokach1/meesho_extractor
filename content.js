@@ -1,4 +1,4 @@
-// Content Script for Meesho Product Rating Filter & Extractor v5.0.0
+// Content Script for Meesho Product Rating Filter & Extractor v5.1.0
 // Calls Gemini Vision API directly from the browser — no Python server needed!
 
 (function () {
@@ -18,8 +18,11 @@
   const MIN_RATING_THRESHOLD = 4.0;
   const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
   const GEMINI_PROMPT =
-    "Look at this product image. Find the code, product ID, SKU, or any text printed at the BOTTOM of the image. " +
-    "Return ONLY that code/text — nothing else. If nothing is visible at the bottom, return null.";
+    "This is a Meesho product image. There is a product code printed at the VERY BOTTOM of the image, " +
+    "typically in small text starting with 's-' followed by numbers (e.g. s-452654917, s-123456789). " +
+    "Look carefully at the bottom strip of the image and extract that code. " +
+    "Return ONLY the raw code (e.g. s-452654917) — nothing else, no explanation. " +
+    "If absolutely no code is visible at the bottom, return null.";
 
   // Auto-start check if triggered by extension search navigation
   chrome.storage.local.get(["autoStartExtraction"], (res) => {
@@ -221,38 +224,65 @@
     return await callGeminiVision(apiKey, b64);
   }
 
-  // Fetch an image URL and return it as base64 PNG (crops bottom 80px for focus)
+  // Fetch image via extension fetch() (bypasses CORS taint), then crop bottom 80px using Blob URL
   async function fetchImageAsBase64(imgUrl) {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
+    try {
+      // Extension host_permissions allow fetching *.meesho.com images directly
+      const resp = await fetch(imgUrl);
+      if (!resp.ok) {
+        console.warn(`[v5.1.0] Image fetch failed HTTP ${resp.status}: ${imgUrl}`);
+        return null;
+      }
 
-      img.onload = () => {
-        try {
-          const W = img.naturalWidth;
-          const H = img.naturalHeight;
-          if (!W || !H) return resolve(null);
+      const arrayBuffer = await resp.arrayBuffer();
+      const mimeType = resp.headers.get('content-type') || 'image/jpeg';
+      const blob = new Blob([arrayBuffer], { type: mimeType });
 
-          // Crop bottom 80px (more generous than 40px for code region)
-          const canvas = document.createElement("canvas");
-          const cropH = Math.min(80, H);
-          const srcY = H - cropH;
-          canvas.width = W;
-          canvas.height = cropH;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(img, 0, srcY, W, cropH, 0, 0, W, cropH);
+      // Create a local blob URL — no CORS restriction on canvas export!
+      const objectUrl = URL.createObjectURL(blob);
 
-          // Return as base64 PNG without data: prefix
-          const dataUrl = canvas.toDataURL("image/png");
-          resolve(dataUrl.split(",")[1]);
-        } catch (e) {
+      return new Promise((resolve) => {
+        const img = new Image();
+
+        img.onload = () => {
+          try {
+            const W = img.naturalWidth;
+            const H = img.naturalHeight;
+            if (!W || !H) { URL.revokeObjectURL(objectUrl); return resolve(null); }
+
+            // Crop bottom 80px where the product code is printed
+            const canvas = document.createElement("canvas");
+            const cropH = Math.min(80, H);
+            const srcY = H - cropH;
+            canvas.width = W;
+            canvas.height = cropH;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, srcY, W, cropH, 0, 0, W, cropH);
+
+            URL.revokeObjectURL(objectUrl);
+
+            const dataUrl = canvas.toDataURL("image/png");
+            console.log(`[v5.1.0] Successfully cropped bottom ${cropH}px of ${W}x${H} image. Sending to Gemini...`);
+            resolve(dataUrl.split(",")[1]);
+          } catch (e) {
+            URL.revokeObjectURL(objectUrl);
+            console.error("[v5.1.0] Canvas crop error:", e.message);
+            resolve(null);
+          }
+        };
+
+        img.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          console.warn("[v5.1.0] Failed to render blob URL to image.");
           resolve(null);
-        }
-      };
+        };
 
-      img.onerror = () => resolve(null);
-      img.src = imgUrl;
-    });
+        img.src = objectUrl;
+      });
+    } catch (err) {
+      console.error("[v5.1.0] fetchImageAsBase64 error:", err.message);
+      return null;
+    }
   }
 
   async function callGeminiVision(apiKey, b64Image) {
@@ -348,5 +378,5 @@
     chrome.runtime.sendMessage({ action: "EXTRACTION_STOPPED", scannedCount: totalScannedCount, products: filteredProducts }).catch(() => {});
   }
 
-  console.log("[Meesho Extractor v5.0.0] Loaded. Direct Gemini Vision (no server required).");
+  console.log("[Meesho Extractor v5.1.0] Loaded. Direct Gemini Vision (no server required). CORS-safe image fetch via Blob URL.");
 })();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "Search Meesho products, filter >4.0 ratings, open product pages, run full-image Gemini Vision OCR for bottom code extraction. No server needed.",
   "permissions": [
     "activeTab",
