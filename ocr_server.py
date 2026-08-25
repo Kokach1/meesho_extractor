@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import base64
 import requests
 from PIL import Image
@@ -20,7 +21,7 @@ GEMINI_PROMPT = (
 )
 
 print("==================================================")
-print("Meesho Product Extractor Server v3.6.0 (Gemini Vision API)")
+print("Meesho Product Extractor Server v3.7.0 (Gemini Vision API)")
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     masked_key = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
@@ -35,7 +36,7 @@ def health():
     key_configured = bool(os.environ.get("GEMINI_API_KEY"))
     return jsonify({
         "status": "ok",
-        "version": "3.6.0",
+        "version": "3.7.0",
         "engine": "Gemini Vision API",
         "api_key_configured": key_configured
     }), 200
@@ -53,9 +54,44 @@ def run_ocr():
             return jsonify({"code": None, "error": "Invalid JSON body"}), 400
 
         img = None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+        }
 
-        # 1. Option A: Base64 image payload from extension
-        if 'image' in data and data['image']:
+        # Step 1: Check if product_link is provided to extract first high-res product image from product page
+        if 'product_link' in data and data['product_link']:
+            product_url = data['product_link']
+            print(f"[Gemini OCR] Accessing product detail page: {product_url}")
+            try:
+                page_resp = requests.get(product_url, headers=headers, timeout=8)
+                if page_resp.status_code == 200:
+                    html_text = page_resp.text
+                    # Search for og:image meta tag in product page HTML
+                    og_match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
+                    if not og_match:
+                        og_match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html_text, re.IGNORECASE)
+                    
+                    if og_match:
+                        high_res_img_url = og_match.group(1)
+                        print(f"[Gemini OCR] Found high-res primary product image URL: {high_res_img_url}")
+                        img_resp = requests.get(high_res_img_url, headers=headers, timeout=10)
+                        if img_resp.status_code == 200:
+                            img = Image.open(io.BytesIO(img_resp.content))
+                            print("[Gemini OCR] Successfully loaded high-resolution product image!")
+            except Exception as page_err:
+                print(f"[Gemini OCR] Could not fetch product page image: {page_err}")
+
+        # Step 2: Fallback to direct image_url if provided and product page fetch did not load image
+        if img is None and 'image_url' in data and data['image_url']:
+            img_url = data['image_url']
+            print(f"[Gemini OCR] Fetching image from direct URL: {img_url}")
+            resp = requests.get(img_url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                img = Image.open(io.BytesIO(resp.content))
+
+        # Step 3: Fallback to base64 image payload if available
+        if img is None and 'image' in data and data['image']:
             try:
                 img_data = data['image']
                 if ',' in img_data:
@@ -65,22 +101,11 @@ def run_ocr():
             except Exception as b64_err:
                 print(f"[Gemini OCR] Base64 decode error: {b64_err}")
 
-        # 2. Option B: Direct CDN Image URL payload
-        if img is None and 'image_url' in data and data['image_url']:
-            img_url = data['image_url']
-            print(f"[Gemini OCR] Fetching image from URL: {img_url}")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            }
-            resp = requests.get(img_url, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                img = Image.open(io.BytesIO(resp.content))
-
         if img is None:
-            print("[Gemini OCR] Error: Could not load image from payload or URL.")
+            print("[Gemini OCR] Error: Could not load image from page, URL, or payload.")
             return jsonify({"code": None}), 200
 
-        # Ensure RGB mode and crop bottom 40 pixels
+        # Ensure RGB mode and crop bottom 40 pixels of high-res image
         img = img.convert('RGB')
         w, h = img.size
         crop_h = min(40, h)
@@ -106,7 +131,6 @@ def run_ocr():
         return jsonify({"code": None, "error": str(e)}), 200
 
 def call_gemini_vision_api(api_key, b64_image):
-    # Try gemini-2.5-flash primary endpoint, fallback to gemini-1.5-flash
     models = ["gemini-2.5-flash", "gemini-1.5-flash"]
     
     payload = {
@@ -180,5 +204,5 @@ def sanitize_gemini_output(text):
     return cleaned
 
 if __name__ == '__main__':
-    print("Starting Gemini Vision API OCR Server on http://127.0.0.1:5000 ...")
+    print("Starting Gemini Vision API OCR Server v3.7.0 on http://127.0.0.1:5000 ...")
     app.run(host='127.0.0.1', port=5000, debug=False)

@@ -1,4 +1,4 @@
-// Content Script for Meesho Product Rating Filter & Extractor with EasyOCR Local Python Service
+// Content Script for Meesho Product Rating Filter & Extractor with Gemini Vision API (v3.7.0)
 
 (function () {
   // Prevent duplicate script injection
@@ -18,7 +18,7 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
-  const OCR_TIMEOUT_MS = 10000; // 10-second timeout for EasyOCR service
+  const OCR_TIMEOUT_MS = 15000; // 15-second timeout for product page fetch + Gemini Vision API
   const EASY_OCR_SERVICE_URL = "http://127.0.0.1:5000/ocr";
 
   // Auto-start check if triggered by extension search navigation
@@ -186,10 +186,10 @@
           !isNaN(productData.rating) &&
           productData.rating > MIN_RATING_THRESHOLD
         ) {
-          console.log(`[Meesho Extractor] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Running EasyOCR...`);
+          console.log(`[Meesho Extractor v3.7.0] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Fetching product detail page for first high-res image...`);
 
-          // Perform bottom 40px image cropping & EasyOCR service call for product code
-          const productCode = await extractProductCodeFromCard(cardElement);
+          // Perform product detail page access & high-res image bottom 40px Gemini Vision OCR
+          const productCode = await extractProductCodeFromCard(cardElement, fullLink);
           productData.code = productCode; // String or null
 
           filteredProducts.push(productData);
@@ -282,44 +282,31 @@
   }
 
   /**
-   * Crop bottom 40 pixels of product image and send to local EasyOCR Python service
+   * Access product detail page, fetch first high-res primary image, crop bottom 40px & send to Gemini Vision server
    */
-  async function extractProductCodeFromCard(cardEl) {
+  async function extractProductCodeFromCard(cardEl, productLink) {
     try {
-      // Robust Image Selector Strategy
+      // Robust catalog thumbnail fallback
       const imgEl = cardEl.querySelector("img[src], img[data-src], img[srcset], img");
-      if (!imgEl) {
-        console.log("[Meesho Extractor] No product img tag found in card.");
-        return null;
+      let imgSrc = "";
+      if (imgEl) {
+        imgSrc = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || imgEl.getAttribute("src") || "";
+        if (imgSrc.startsWith("//")) imgSrc = "https:" + imgSrc;
+        else if (imgSrc.startsWith("/")) imgSrc = "https://www.meesho.com" + imgSrc;
       }
 
-      let imgSrc = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || imgEl.getAttribute("src") || "";
-      if (imgSrc.startsWith("//")) {
-        imgSrc = "https:" + imgSrc;
-      } else if (imgSrc.startsWith("/")) {
-        imgSrc = "https://www.meesho.com" + imgSrc;
-      }
-
-      if (!imgSrc || imgSrc.startsWith("data:image/svg")) {
-        console.log("[Meesho Extractor] Invalid product image URL.");
-        return null;
-      }
-
-      // Try local Canvas crop (if not blocked by CORS)
-      const croppedDataUrl = await cropBottom40Pixels(imgSrc);
-
-      // Send payload with BOTH base64 cropped image & direct CDN URL to Python OCR server
+      // Send payload with product_link to let server fetch full high-res product detail page image
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
 
       try {
-        console.log(`[Meesho Extractor] Sending image payload to EasyOCR server (${EASY_OCR_SERVICE_URL})...`);
+        console.log(`[Meesho Extractor v3.7.0] Accessing product page for Gemini Vision: ${productLink}`);
         const response = await fetch(EASY_OCR_SERVICE_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            image: croppedDataUrl || null,
-            image_url: imgSrc
+            product_link: productLink,
+            image_url: imgSrc || null
           }),
           signal: controller.signal
         });
@@ -327,62 +314,25 @@
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-          console.warn("[Meesho Extractor] EasyOCR server returned non-200 HTTP status.");
+          console.warn("[Meesho Extractor] Gemini Vision OCR server returned non-200 HTTP status.");
           return null;
         }
 
         const data = await response.json();
         if (data && data.code) {
-          console.log(`[Meesho Extractor] OCR Code Received: '${data.code}'`);
+          console.log(`[Meesho Extractor v3.7.0] Gemini Vision Extracted Code: '${data.code}'`);
           return sanitizeCodeText(data.code);
         }
         return null;
       } catch (fetchErr) {
         clearTimeout(timeoutId);
-        console.warn("[Meesho Extractor] EasyOCR service unavailable or timed out:", fetchErr.message);
+        console.warn("[Meesho Extractor] Gemini Vision service unavailable or timed out:", fetchErr.message);
         return null;
       }
     } catch (err) {
-      console.error("[Meesho Extractor] Image OCR error:", err);
+      console.error("[Meesho Extractor] Code extraction error:", err);
       return null;
     }
-  }
-
-  function cropBottom40Pixels(imgSrc) {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-
-      img.onload = () => {
-        try {
-          if (!img.naturalWidth || !img.naturalHeight) {
-            return resolve(null);
-          }
-
-          const canvas = document.createElement("canvas");
-          const ctx = canvas.getContext("2d");
-
-          const cropHeight = Math.min(40, img.naturalHeight);
-          const sourceY = Math.max(0, img.naturalHeight - cropHeight);
-
-          canvas.width = img.naturalWidth;
-          canvas.height = cropHeight;
-
-          ctx.drawImage(
-            img,
-            0, sourceY, img.naturalWidth, cropHeight,
-            0, 0, img.naturalWidth, cropHeight
-          );
-
-          resolve(canvas.toDataURL("image/png"));
-        } catch (e) {
-          resolve(null);
-        }
-      };
-
-      img.onerror = () => resolve(null);
-      img.src = imgSrc;
-    });
   }
 
   function sanitizeCodeText(raw) {

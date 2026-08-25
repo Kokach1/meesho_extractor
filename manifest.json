@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "3.6.0",
-  "description": "Search Meesho products, auto-extract listings, filter items with >4.0 ratings, run bottom 40px Gemini Vision API OCR, and export to Excel (XLSX).",
+  "version": "3.7.0",
+  "description": "Search Meesho products, auto-extract listings, filter items with >4.0 ratings, fetch product page high-res primary images for Gemini Vision OCR, and export to Excel (XLSX).",
   "permissions": [
     "activeTab",
     "tabs",
