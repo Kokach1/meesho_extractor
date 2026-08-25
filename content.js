@@ -1,4 +1,4 @@
-// Content Script for Meesho Product Rating Filter & Extractor with Gemini Vision API (v3.7.0)
+// Content Script for Meesho Product Rating Filter & Extractor with Gemini Vision API (v3.9.0)
 
 (function () {
   // Prevent duplicate script injection
@@ -18,7 +18,7 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
-  const OCR_TIMEOUT_MS = 15000; // 15-second timeout for product page fetch + Gemini Vision API
+  const OCR_TIMEOUT_MS = 15000;
   const EASY_OCR_SERVICE_URL = "http://127.0.0.1:5000/ocr";
 
   // Auto-start check if triggered by extension search navigation
@@ -27,7 +27,7 @@
       chrome.storage.local.set({ autoStartExtraction: false });
       setTimeout(() => {
         if (!isExtracting) {
-          console.log("[Meesho Extractor] Auto-starting extraction on search page load...");
+          console.log("[Meesho Extractor v3.9.0] Auto-starting extraction on search page load...");
           startExtractionLoop();
         }
       }, 1200);
@@ -101,12 +101,12 @@
       }
 
       if (noNewProductsAttempts >= NO_NEW_PRODUCTS_LIMIT) {
-        console.log("[Meesho Extractor] No new products loaded after 3 scroll attempts. Stopping.");
+        console.log("[Meesho Extractor v3.9.0] No new products loaded after 3 scroll attempts. Stopping.");
         break;
       }
 
       if (scrollAttempts >= MAX_SCROLL_ATTEMPTS) {
-        console.log("[Meesho Extractor] Reached maximum scroll limit (100). Stopping.");
+        console.log("[Meesho Extractor v3.9.0] Reached maximum scroll limit (100). Stopping.");
         break;
       }
 
@@ -186,10 +186,13 @@
           !isNaN(productData.rating) &&
           productData.rating > MIN_RATING_THRESHOLD
         ) {
-          console.log(`[Meesho Extractor v3.7.0] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Fetching product detail page for first high-res image...`);
+          console.log(`[Meesho Extractor v3.9.0] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Accessing product page for main high-res image...`);
 
-          // Perform product detail page access & high-res image bottom 40px Gemini Vision OCR
-          const productCode = await extractProductCodeFromCard(cardElement, fullLink);
+          // Access product detail page inside browser & extract first high-resolution primary image URL
+          const highResImageUrl = await fetchPrimaryImageFromProductPage(fullLink, cardElement);
+
+          // Extract product code using Gemini Vision API on bottom 40px of high-res image
+          const productCode = await extractProductCodeWithGemini(fullLink, highResImageUrl);
           productData.code = productCode; // String or null
 
           filteredProducts.push(productData);
@@ -282,55 +285,94 @@
   }
 
   /**
-   * Access product detail page, fetch first high-res primary image, crop bottom 40px & send to Gemini Vision server
+   * Access product detail page via browser fetch() and extract the primary high-res image URL
    */
-  async function extractProductCodeFromCard(cardEl, productLink) {
+  async function fetchPrimaryImageFromProductPage(productLink, cardEl) {
+    // Catalog fallback image URL
+    let fallbackSrc = "";
+    const imgEl = cardEl.querySelector("img[src], img[data-src], img[srcset], img");
+    if (imgEl) {
+      fallbackSrc = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || imgEl.getAttribute("src") || "";
+      if (fallbackSrc.startsWith("//")) fallbackSrc = "https:" + fallbackSrc;
+      else if (fallbackSrc.startsWith("/")) fallbackSrc = "https://www.meesho.com" + fallbackSrc;
+    }
+
     try {
-      // Robust catalog thumbnail fallback
-      const imgEl = cardEl.querySelector("img[src], img[data-src], img[srcset], img");
-      let imgSrc = "";
-      if (imgEl) {
-        imgSrc = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || imgEl.getAttribute("src") || "";
-        if (imgSrc.startsWith("//")) imgSrc = "https:" + imgSrc;
-        else if (imgSrc.startsWith("/")) imgSrc = "https://www.meesho.com" + imgSrc;
+      console.log(`[Meesho Extractor v3.9.0] Fetching detail page HTML: ${productLink}`);
+      const resp = await fetch(productLink, { headers: { "Accept": "text/html" } });
+      if (!resp.ok) return fallbackSrc;
+
+      const htmlText = await resp.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlText, "text/html");
+
+      // 1. Try og:image meta tag
+      const ogMeta = doc.querySelector('meta[property="og:image"], meta[name="og:image"]');
+      if (ogMeta && ogMeta.content && ogMeta.content.includes("images.meesho.com")) {
+        console.log(`[Meesho Extractor v3.9.0] Extracted primary image from og:image: ${ogMeta.content}`);
+        return ogMeta.content;
       }
 
-      // Send payload with product_link to let server fetch full high-res product detail page image
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
-
-      try {
-        console.log(`[Meesho Extractor v3.7.0] Accessing product page for Gemini Vision: ${productLink}`);
-        const response = await fetch(EASY_OCR_SERVICE_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            product_link: productLink,
-            image_url: imgSrc || null
-          }),
-          signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          console.warn("[Meesho Extractor] Gemini Vision OCR server returned non-200 HTTP status.");
-          return null;
+      // 2. Try __NEXT_DATA__ script payload
+      const nextScript = doc.querySelector('script[id="__NEXT_DATA__"]');
+      if (nextScript && nextScript.textContent) {
+        const matches = nextScript.textContent.match(/https:\/\/images\.meesho\.com\/images\/products\/[^\s"']+/g);
+        if (matches && matches.length > 0) {
+          console.log(`[Meesho Extractor v3.9.0] Extracted primary image from __NEXT_DATA__: ${matches[0]}`);
+          return matches[0];
         }
+      }
 
-        const data = await response.json();
-        if (data && data.code) {
-          console.log(`[Meesho Extractor v3.7.0] Gemini Vision Extracted Code: '${data.code}'`);
-          return sanitizeCodeText(data.code);
-        }
-        return null;
-      } catch (fetchErr) {
-        clearTimeout(timeoutId);
-        console.warn("[Meesho Extractor] Gemini Vision service unavailable or timed out:", fetchErr.message);
+      // 3. Try main product gallery in DOM
+      const mainImg = doc.querySelector('img[src*="images.meesho.com"]');
+      if (mainImg && mainImg.src) {
+        console.log(`[Meesho Extractor v3.9.0] Extracted primary image from DOM: ${mainImg.src}`);
+        return mainImg.src;
+      }
+
+      return fallbackSrc;
+    } catch (e) {
+      console.warn("[Meesho Extractor v3.9.0] Product page fetch error, using catalog fallback:", e);
+      return fallbackSrc;
+    }
+  }
+
+  /**
+   * Send high-res image URL to local server to crop bottom 40px and call Gemini Vision API
+   */
+  async function extractProductCodeWithGemini(productLink, imageUrl) {
+    if (!imageUrl) return null;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(EASY_OCR_SERVICE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_link: productLink,
+          image_url: imageUrl
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        console.warn("[Meesho Extractor] Gemini Vision OCR server returned non-200 HTTP status.");
         return null;
       }
-    } catch (err) {
-      console.error("[Meesho Extractor] Code extraction error:", err);
+
+      const data = await response.json();
+      if (data && data.code) {
+        console.log(`[Meesho Extractor v3.9.0] Gemini Vision Code Result: '${data.code}'`);
+        return sanitizeCodeText(data.code);
+      }
+      return null;
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      console.warn("[Meesho Extractor] Gemini Vision service unavailable or timed out:", fetchErr.message);
       return null;
     }
   }
