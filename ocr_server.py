@@ -6,10 +6,18 @@ import requests
 from PIL import Image
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 
-# Load .env file if available
-load_dotenv()
+# Automatically load .env file if present (using standard library)
+if os.path.exists('.env'):
+    try:
+        with open('.env', 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, val = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), val.strip().strip("'").strip('"'))
+    except Exception as env_err:
+        print(f"[OCR Server] Notice loading .env: {env_err}")
 
 app = Flask(__name__)
 CORS(app)  # Enable Cross-Origin Resource Sharing for Chrome extension
@@ -21,7 +29,7 @@ GEMINI_PROMPT = (
 )
 
 print("==================================================")
-print("Meesho Product Extractor Server v3.7.0 (Gemini Vision API)")
+print("Meesho Product Extractor Server v3.8.0 (Gemini Vision API)")
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     masked_key = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
@@ -36,7 +44,7 @@ def health():
     key_configured = bool(os.environ.get("GEMINI_API_KEY"))
     return jsonify({
         "status": "ok",
-        "version": "3.7.0",
+        "version": "3.8.0",
         "engine": "Gemini Vision API",
         "api_key_configured": key_configured
     }), 200
@@ -204,5 +212,5 @@ def sanitize_gemini_output(text):
     return cleaned
 
 if __name__ == '__main__':
-    print("Starting Gemini Vision API OCR Server v3.7.0 on http://127.0.0.1:5000 ...")
+    print("Starting Gemini Vision API OCR Server v3.8.0 on http://127.0.0.1:5000 ...")
     app.run(host='127.0.0.1', port=5000, debug=False)
