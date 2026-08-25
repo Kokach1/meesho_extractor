@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meesho Search & Rating Filter Extractor</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="extension-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-badge">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 19V5L12 12.5L20 5V19" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="app-title">Meesho Extractor</h1>
+          <span class="app-subtitle">>4.0 Rating Filter</span>
+        </div>
+      </div>
+      <span class="active-badge" id="active-badge">Active Tab</span>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Search Form View -->
+      <section id="search-section" class="section">
+        <form id="search-form" class="search-form" autocomplete="off">
+          <div class="input-wrapper">
+            <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input 
+              type="text" 
+              id="search-input" 
+              class="search-input" 
+              placeholder="Enter product name..." 
+              autofocus 
+              required
+            />
+            <button type="button" id="clear-btn" class="clear-btn" aria-label="Clear input" hidden>&times;</button>
+          </div>
+          <button type="submit" id="search-button" class="btn-primary">
+            <span>Search Meesho</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </button>
+        </form>
+      </section>
+
+      <!-- Error view if not on Meesho -->
+      <section id="error-view" class="section hidden">
+        <div class="error-card">
+          <div class="error-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+          </div>
+          <p id="error-message" class="error-text">Please open Meesho.com before searching.</p>
+          <button type="button" id="open-meesho-btn" class="btn-secondary">
+            <span>Open Meesho.com</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Extractor Dashboard Controls -->
+      <section id="extractor-controls" class="section">
+        <div class="control-actions">
+          <button type="button" id="start-extract-btn" class="btn-action btn-start">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            <span>Start Extraction</span>
+          </button>
+          <button type="button" id="stop-extract-btn" class="btn-action btn-stop" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+            </svg>
+            <span>Stop Extraction</span>
+          </button>
+        </div>
+
+        <!-- Status Progress Banner -->
+        <div class="status-banner">
+          <div class="status-header">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="progress-message" class="progress-message">Ready to extract</span>
+          </div>
+          <div class="stats-row">
+            <div class="stat-box">
+              <span class="stat-label">Scanned</span>
+              <span id="stat-scanned" class="stat-value">0</span>
+            </div>
+            <div class="stat-box highlight">
+              <span class="stat-label">Matching (>4.0 ★)</span>
+              <span id="stat-matching" class="stat-value">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Excel Export Controls -->
+        <div class="export-bar">
+          <button type="button" id="export-excel-btn" class="btn-export" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            <span>Export to Excel</span>
+          </button>
+          <span id="export-status-text" class="export-status-text">0 products ready for export</span>
+        </div>
+      </section>
+
+      <!-- Filtered Results Table View -->
+      <section id="results-section" class="section">
+        <div class="results-header">
+          <h2 class="results-title">Extracted Products</h2>
+          <span id="results-count-badge" class="count-badge">0 items</span>
+        </div>
+
+        <div class="results-scroll-container">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>Product Name</th>
+                <th>Price</th>
+                <th>Type</th>
+                <th>Rating</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody id="results-table-body">
+              <tr class="empty-row">
+                <td colspan="5">No extracted products with >4.0 rating yet. Click "Start Extraction" while viewing Meesho search results.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Meesho Rating Filter & Extractor v2.0</span>
+    </footer>
+  </div>
+
+  <script src="xlsx.full.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

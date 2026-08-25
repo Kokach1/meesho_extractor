@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Meesho Product Search & Rating Extractor",
+  "version": "2.0.0",
+  "description": "Search Meesho products, auto-extract listings, filter items with >4.0 ratings, and export directly to Excel (XLSX).",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.meesho.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.meesho.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Meesho Search & Extractor",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "xlsx.full.min.js"
+      ],
+      "matches": [
+        "*://*.meesho.com/*"
+      ]
+    }
+  ]
+}
