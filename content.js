@@ -1,4 +1,4 @@
-// Content Script for Meesho Product Rating Filter & Extractor with Bottom 40px Image OCR
+// Content Script for Meesho Product Rating Filter & Extractor with EasyOCR Local Python Service
 
 (function () {
   // Prevent duplicate script injection
@@ -18,7 +18,8 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
-  const OCR_TIMEOUT_MS = 3000;
+  const OCR_TIMEOUT_MS = 10000; // 10-second timeout for EasyOCR service
+  const EASY_OCR_SERVICE_URL = "http://127.0.0.1:5000/ocr";
 
   // Auto-start check if triggered by extension search navigation
   chrome.storage.local.get(["autoStartExtraction"], (res) => {
@@ -185,7 +186,7 @@
           !isNaN(productData.rating) &&
           productData.rating > MIN_RATING_THRESHOLD
         ) {
-          // Perform bottom 40px image cropping & OCR for product code extraction
+          // Perform bottom 40px image cropping & EasyOCR service call for product code
           const productCode = await extractProductCodeFromCard(cardElement);
           productData.code = productCode; // String or null
 
@@ -279,82 +280,95 @@
   }
 
   /**
-   * Crop bottom 40 pixels of product image and run OCR with 3-second timeout
+   * Crop bottom 40 pixels of product image and send to local EasyOCR Python service
    */
   async function extractProductCodeFromCard(cardEl) {
-    return new Promise((resolve) => {
-      let isSettled = false;
+    try {
+      const imgEl = cardEl.querySelector("img[src], img[srcset], img[data-src]");
+      if (!imgEl) {
+        return null;
+      }
 
-      const safeResolve = (val) => {
-        if (!isSettled) {
-          isSettled = true;
-          if (timeoutTimer) clearTimeout(timeoutTimer);
-          resolve(val);
+      const imgSrc = imgEl.getAttribute("data-src") || imgEl.src;
+      if (!imgSrc || imgSrc.startsWith("data:image/svg")) {
+        return null;
+      }
+
+      // 1. Crop bottom 40 pixels using Canvas
+      const croppedDataUrl = await cropBottom40Pixels(imgSrc);
+      if (!croppedDataUrl) {
+        return null;
+      }
+
+      // 2. Call local EasyOCR Python service (http://127.0.0.1:5000/ocr) with 10-sec timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(EASY_OCR_SERVICE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: croppedDataUrl }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          console.warn("EasyOCR service returned non-200 status");
+          return null;
+        }
+
+        const data = await response.json();
+        if (data && data.code) {
+          return sanitizeCodeText(data.code);
+        }
+        return null;
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        // Fault tolerant: Return null if local Python service is offline, erroring, or timed out
+        console.warn("EasyOCR local service unavailable or timed out (>10s):", fetchErr.message);
+        return null;
+      }
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function cropBottom40Pixels(imgSrc) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+
+      img.onload = () => {
+        try {
+          if (!img.naturalWidth || !img.naturalHeight) {
+            return resolve(null);
+          }
+
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+
+          const cropHeight = Math.min(40, img.naturalHeight);
+          const sourceY = Math.max(0, img.naturalHeight - cropHeight);
+
+          canvas.width = img.naturalWidth;
+          canvas.height = cropHeight;
+
+          ctx.drawImage(
+            img,
+            0, sourceY, img.naturalWidth, cropHeight,
+            0, 0, img.naturalWidth, cropHeight
+          );
+
+          resolve(canvas.toDataURL("image/png"));
+        } catch (e) {
+          resolve(null);
         }
       };
 
-      // Strict 3-second timeout requirement
-      const timeoutTimer = setTimeout(() => {
-        safeResolve(null);
-      }, OCR_TIMEOUT_MS);
-
-      try {
-        const imgEl = cardEl.querySelector("img[src], img[srcset], img[data-src]");
-        if (!imgEl) {
-          return safeResolve(null);
-        }
-
-        const imgSrc = imgEl.getAttribute("data-src") || imgEl.src;
-        if (!imgSrc || imgSrc.startsWith("data:image/svg")) {
-          return safeResolve(null);
-        }
-
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-
-        img.onload = async () => {
-          try {
-            if (!img.naturalWidth || !img.naturalHeight) {
-              return safeResolve(null);
-            }
-
-            // Create Canvas & Crop bottom 40 pixels
-            const canvas = document.createElement("canvas");
-            const ctx = canvas.getContext("2d");
-
-            const cropHeight = Math.min(40, img.naturalHeight);
-            const sourceY = Math.max(0, img.naturalHeight - cropHeight);
-
-            canvas.width = img.naturalWidth;
-            canvas.height = cropHeight;
-
-            ctx.drawImage(
-              img,
-              0, sourceY, img.naturalWidth, cropHeight,
-              0, 0, img.naturalWidth, cropHeight
-            );
-
-            const croppedDataUrl = canvas.toDataURL("image/png");
-
-            // Run OCR if Tesseract library is loaded
-            if (typeof Tesseract !== "undefined" && Tesseract.recognize) {
-              const res = await Tesseract.recognize(croppedDataUrl, "eng");
-              if (res && res.data && res.data.text) {
-                const text = sanitizeCodeText(res.data.text);
-                return safeResolve(text ? text : null);
-              }
-            }
-            safeResolve(null);
-          } catch (e) {
-            safeResolve(null);
-          }
-        };
-
-        img.onerror = () => safeResolve(null);
-        img.src = imgSrc;
-      } catch (err) {
-        safeResolve(null);
-      }
+      img.onerror = () => resolve(null);
+      img.src = imgSrc;
     });
   }
 

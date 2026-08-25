@@ -1,16 +1,18 @@
-# Meesho Product Search, Rating Filter & OCR Code Extractor 🛒📊🔍
+# Meesho Product Search, Rating Filter & EasyOCR Extractor 🛒📊🐍
 
-A powerful Chrome Extension (Manifest V3) that enables instant product searching on [Meesho.com](https://www.meesho.com), automated DOM extraction & incremental scrolling, real-time product filtering for items with ratings strictly **> 4.0 out of 5**, **bottom 40px product image OCR code extraction**, and one-click export to **Excel (.xlsx)**.
+A high-performance Chrome Extension (Manifest V3) paired with a local Python **EasyOCR** microservice that performs instant product searching on [Meesho.com](https://www.meesho.com), incremental scrolling, rating filtering (**> 4.0 out of 5**), bottom 40px image text extraction via **EasyOCR**, and one-click export to **Excel (.xlsx)**.
 
 ---
 
-## 🌟 Upgraded Features
+## 🌟 Architecture & Features
 
-- **Automated Search & Extract**: Enter a product query in the popup to search Meesho and automatically start product extraction as soon as the search page loads!
+- **Automated Search & Extraction**: Enter a product query in the popup to search Meesho and automatically trigger product extraction upon page load.
 - **Strict Rating Filter (>4.0 ★)**: Automatically filters and retains only products with numeric ratings strictly greater than **4.0 out of 5**.
-- **Product Code OCR (Bottom 40px Crop)**: For every product passing the rating filter, crops the bottom 40 pixels of its primary image using HTML5 `<canvas>` and runs local OCR (`tesseract.min.js`) with a strict **3-second timeout** to extract visible product codes.
-- **Graceful Null Fallback**: If an image cannot be loaded, produces no readable text, or exceeds the 3-second timeout, `Code` is set to `null` while extraction continues for remaining products.
-- **Product Deduplication**: Uses `product_link` as unique deduplication key to eliminate duplicate product cards during continuous page scrolling.
+- **EasyOCR Local Python Microservice (`ocr_server.py`)**:
+  - Uses `EasyOCR` (`languages=['en']`, `gpu=False`).
+  - Crops bottom 40 pixels of high-rated product images and runs EasyOCR text extraction via a local REST API (`http://127.0.0.1:5000/ocr`).
+  - Enforces a 10-second timeout per product card (`timeout_seconds: 10`).
+- **Fault-Tolerant Fallback**: If the local Python EasyOCR server is offline or unreachable, the Chrome Extension catches the network error gracefully, sets `Code` to `null`, and continues extracting remaining products without crashing.
 - **Excel Export (.xlsx)**: Export filtered dataset directly to Microsoft Excel format using locally bundled SheetJS (`xlsx.full.min.js`). Includes timestamped filename `meesho_products_YYYY-MM-DD_HH-mm.xlsx` and active hyperlinks for product URLs.
 - **Interactive Dashboard**: Real-time progress status, live scanned & matching counters, control buttons (**Search**, **Start Extraction**, **Stop Extraction**, **Export to Excel**), and scrollable table view with a dedicated **Code** column.
 
@@ -20,39 +22,46 @@ A powerful Chrome Extension (Manifest V3) that enables instant product searching
 
 ```
 meesho-search-extractor/
+├── ocr_server.py         # Local Python Flask microservice using EasyOCR (NEW)
+├── requirements.txt      # Python dependencies for EasyOCR server (NEW)
 ├── manifest.json         # Manifest V3 extension manifest (modified)
-├── background.js         # Service worker for background state & message relay (modified)
-├── content.js            # Content script for DOM scraping, auto-scroll & OCR (modified)
-├── popup.html            # Extension popup UI with Code column table (modified)
-├── popup.css             # Extension styling with Code badge formatting (modified)
-├── popup.js              # Extractor UI controller & SheetJS Excel exporter (modified)
+├── background.js         # Service worker for background state & message relay
+├── content.js            # Content script calling http://127.0.0.1:5000/ocr (modified)
+├── popup.html            # Extension popup UI with Code column table
+├── popup.css             # Extension styling with Code badge formatting
+├── popup.js              # Extractor UI controller & SheetJS Excel exporter
 ├── xlsx.full.min.js      # Bundled local SheetJS library for XLSX export
-├── tesseract.min.js     # Bundled local Tesseract.js engine for OCR extraction (NEW)
 ├── icons/                # Extension icons (16px, 48px, 128px)
-└── README.md             # Complete documentation & usage guide (modified)
+└── README.md             # Complete documentation & setup instructions (modified)
 ```
 
 ---
 
-## 📊 Extracted Excel Sheet Schema
+## 🐍 How to Setup & Run the Local EasyOCR Python Server
 
-| Column Name | Description | Fallback / Example |
-| :--- | :--- | :--- |
-| **Product Name** | Full title of the product card | `Women Cotton Printed Saree` |
-| **Price** | Current displayed price | `₹349` |
-| **Type** | Product classification / category | `Saree` |
-| **Product Link** | Full URL link (Clickable hyperlink) | `https://www.meesho.com/p/1abc2d` |
-| **Rating / 5** | Numeric rating out of 5 | `4.3` |
-| **Code** | Extracted code from bottom 40px image OCR | `saree_code1` or `null` |
+1. **Install Python Dependencies**:
+   Open your terminal in the extension folder and run:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Start EasyOCR Service**:
+   Run the local server script:
+   ```bash
+   python ocr_server.py
+   ```
+   The server will start listening on `http://127.0.0.1:5000`.
+
+*(Note: If you choose not to run the Python server, the Chrome extension will still extract all product details normally and default the `Code` field to `null`.)*
 
 ---
 
-## 🚀 How to Install & Use in Chrome
+## 🚀 How to Install & Use the Chrome Extension
 
 1. Go to `chrome://extensions/` in Google Chrome and enable **Developer mode**.
 2. Click **Load unpacked** and select folder:
    `c:\Users\KOKACHI\Downloads\projects\mesho\ce`
 3. Pin the extension to your toolbar.
 4. Click the extension icon, enter a product query (e.g. `kurti` or `shoes`), and press <kbd>Enter</kbd>.
-5. The extension will automatically open Meesho, scroll down, filter products with `rating > 4.0`, run bottom 40px image OCR, and populate the dashboard!
+5. The extension will open Meesho, scroll down, filter products with `rating > 4.0`, run EasyOCR on bottom 40px images, and populate the dashboard!
 6. Click **Export to Excel** to download your complete `.xlsx` spreadsheet!

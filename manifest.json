@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "2.1.0",
-  "description": "Search Meesho products, auto-extract listings, filter items with >4.0 ratings, run bottom 40px image OCR for product codes, and export to Excel (XLSX).",
+  "version": "2.2.0",
+  "description": "Search Meesho products, auto-extract listings, filter items with >4.0 ratings, run bottom 40px image EasyOCR, and export to Excel (XLSX).",
   "permissions": [
     "activeTab",
     "tabs",
@@ -10,7 +10,9 @@
     "storage"
   ],
   "host_permissions": [
-    "*://*.meesho.com/*"
+    "*://*.meesho.com/*",
+    "http://127.0.0.1:5000/*",
+    "http://localhost:5000/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,7 +23,6 @@
         "*://*.meesho.com/*"
       ],
       "js": [
-        "tesseract.min.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -44,8 +45,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "xlsx.full.min.js",
-        "tesseract.min.js"
+        "xlsx.full.min.js"
       ],
       "matches": [
         "*://*.meesho.com/*"
