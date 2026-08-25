@@ -23,13 +23,14 @@ app = Flask(__name__)
 CORS(app)  # Enable Cross-Origin Resource Sharing for Chrome extension
 
 GEMINI_PROMPT = (
-    "Analyze this image carefully. Extract the text or code visible in the image. "
+    "Analyze this product image carefully. Look for any product code, SKU, serial number, "
+    "barcode text, supplier code, or any alphanumeric identifier visible anywhere in the image. "
     "Return ONLY the extracted code/text with no explanation. "
-    "If no readable text or code is visible, return null."
+    "If no readable code or identifier is visible, return null."
 )
 
 print("==================================================")
-print("Meesho Product Extractor Server v3.9.0 (Gemini Vision API)")
+print("Meesho Product Extractor Server v4.0.0 (Gemini Vision API - Full Image Scan)")
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     masked_key = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
@@ -44,7 +45,7 @@ def health():
     key_configured = bool(os.environ.get("GEMINI_API_KEY"))
     return jsonify({
         "status": "ok",
-        "version": "3.9.0",
+        "version": "4.0.0",
         "engine": "Gemini Vision API",
         "api_key_configured": key_configured
     }), 200
@@ -67,16 +68,16 @@ def run_ocr():
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
         }
 
-        # Step 1: Direct CDN Image URL payload (primary high-res image from product page)
+        # Download full high-res product image
         if 'image_url' in data and data['image_url']:
             img_url = data['image_url']
-            print(f"[Gemini OCR v3.9.0] Fetching primary high-res image URL: {img_url}")
+            print(f"[Gemini OCR v4.0.0] Downloading full product image: {img_url}")
             resp = requests.get(img_url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 img = Image.open(io.BytesIO(resp.content))
-                print(f"[Gemini OCR v3.9.0] Image downloaded successfully ({img.width}x{img.height} px).")
+                print(f"[Gemini OCR v4.0.0] Image downloaded successfully ({img.width}x{img.height} px). Sending FULL image to Gemini Vision...")
 
-        # Step 2: Base64 image payload fallback
+        # Base64 image payload fallback
         if img is None and 'image' in data and data['image']:
             try:
                 img_data = data['image']
@@ -84,33 +85,27 @@ def run_ocr():
                     img_data = img_data.split(',')[1]
                 image_bytes = base64.b64decode(img_data)
                 img = Image.open(io.BytesIO(image_bytes))
+                print(f"[Gemini OCR v4.0.0] Using base64 image payload ({img.width}x{img.height} px).")
             except Exception as b64_err:
-                print(f"[Gemini OCR v3.9.0] Base64 decode error: {b64_err}")
+                print(f"[Gemini OCR v4.0.0] Base64 decode error: {b64_err}")
 
         if img is None:
             print("[Gemini OCR v3.9.0] Error: Could not load image from payload or URL.")
             return jsonify({"code": None}), 200
 
-        # Ensure RGB mode and crop bottom 40 pixels of high-res image
+        # Ensure RGB mode. Send the FULL image to Gemini Vision (no crop constraint)
         img = img.convert('RGB')
         w, h = img.size
-        crop_h = min(40, h)
-        if h > crop_h:
-            crop_box = (0, h - crop_h, w, h)
-            img_cropped = img.crop(crop_box)
-        else:
-            img_cropped = img
+        print(f"[Gemini OCR v4.0.0] Processing full image ({w}x{h} px) through Gemini Vision API...")
 
-        # Save cropped slice as PNG in memory buffer
+        # Encode full image as PNG in memory buffer
         buf = io.BytesIO()
-        img_cropped.save(buf, format="PNG")
-        b64_cropped = base64.b64encode(buf.getvalue()).decode("utf-8")
+        img.save(buf, format="PNG")
+        b64_full = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        # Send request to Gemini Vision API
-        extracted_code = call_gemini_vision_api(api_key, b64_cropped)
-        print(f"==================================================")
-        print(f" [v3.9.0 SUCCESS] Extracted Code -> '{extracted_code}'")
-        print(f"==================================================")
+        # Send full image to Gemini Vision API
+        extracted_code = call_gemini_vision_api(api_key, b64_full)
+        print(f"[Gemini OCR v4.0.0] Result: '{extracted_code}'")
 
         return jsonify({"code": extracted_code}), 200
 
@@ -192,5 +187,5 @@ def sanitize_gemini_output(text):
     return cleaned
 
 if __name__ == '__main__':
-    print("Starting Gemini Vision API OCR Server v3.9.0 on http://127.0.0.1:5000 ...")
+    print("Starting Gemini Vision API OCR Server v4.0.0 on http://127.0.0.1:5000 ...")
     app.run(host='127.0.0.1', port=5000, debug=False)

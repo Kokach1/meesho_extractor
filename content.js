@@ -1,4 +1,4 @@
-// Content Script for Meesho Product Rating Filter & Extractor with Gemini Vision API (v3.9.0)
+// Content Script for Meesho Product Rating Filter & Extractor with Gemini Vision API (v4.0.0)
 
 (function () {
   // Prevent duplicate script injection
@@ -18,7 +18,7 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
-  const OCR_TIMEOUT_MS = 15000;
+  const OCR_TIMEOUT_MS = 20000; // 20-second timeout for product page fetch + full image Gemini Vision
   const EASY_OCR_SERVICE_URL = "http://127.0.0.1:5000/ocr";
 
   // Auto-start check if triggered by extension search navigation
@@ -186,12 +186,12 @@
           !isNaN(productData.rating) &&
           productData.rating > MIN_RATING_THRESHOLD
         ) {
-          console.log(`[Meesho Extractor v3.9.0] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Accessing product page for main high-res image...`);
+          console.log(`[Meesho Extractor v4.0.0] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Opening product detail page for full image Gemini Vision OCR...`);
 
-          // Access product detail page inside browser & extract first high-resolution primary image URL
+          // Open product detail page in-browser and extract first high-resolution primary image URL
           const highResImageUrl = await fetchPrimaryImageFromProductPage(fullLink, cardElement);
 
-          // Extract product code using Gemini Vision API on bottom 40px of high-res image
+          // Extract product code using Gemini Vision API on FULL image (no crop constraint)
           const productCode = await extractProductCodeWithGemini(fullLink, highResImageUrl);
           productData.code = productCode; // String or null
 
@@ -298,36 +298,57 @@
     }
 
     try {
-      console.log(`[Meesho Extractor v3.9.0] Fetching detail page HTML: ${productLink}`);
-      const resp = await fetch(productLink, { headers: { "Accept": "text/html" } });
+      console.log(`[Meesho Extractor v4.0.0] Opening product detail page to extract primary image: ${productLink}`);
+      const resp = await fetch(productLink, { headers: { "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" } });
       if (!resp.ok) return fallbackSrc;
 
       const htmlText = await resp.text();
       const parser = new DOMParser();
       const doc = parser.parseFromString(htmlText, "text/html");
 
-      // 1. Try og:image meta tag
-      const ogMeta = doc.querySelector('meta[property="og:image"], meta[name="og:image"]');
-      if (ogMeta && ogMeta.content && ogMeta.content.includes("images.meesho.com")) {
-        console.log(`[Meesho Extractor v3.9.0] Extracted primary image from og:image: ${ogMeta.content}`);
-        return ogMeta.content;
-      }
-
-      // 2. Try __NEXT_DATA__ script payload
+      // 1. Try __NEXT_DATA__ script payload (highest quality source)
       const nextScript = doc.querySelector('script[id="__NEXT_DATA__"]');
       if (nextScript && nextScript.textContent) {
-        const matches = nextScript.textContent.match(/https:\/\/images\.meesho\.com\/images\/products\/[^\s"']+/g);
-        if (matches && matches.length > 0) {
-          console.log(`[Meesho Extractor v3.9.0] Extracted primary image from __NEXT_DATA__: ${matches[0]}`);
-          return matches[0];
+        // Find all Meesho image URLs, prefer largest resolution patterns
+        const allMatches = nextScript.textContent.match(/https:\/\/images\.meesho\.com\/images\/products\/[^\s"'\\]+/g);
+        if (allMatches && allMatches.length > 0) {
+          // Sort: prefer URLs without small resolution suffixes (prefer _512 or bare over _128/_80)
+          const best = allMatches.sort((a, b) => {
+            const scoreUrl = (u) => {
+              if (u.includes('_512')) return 3;
+              if (u.includes('_1024')) return 4;
+              if (u.includes('_128')) return 1;
+              if (u.includes('_80')) return 0;
+              return 2;
+            };
+            return scoreUrl(b) - scoreUrl(a);
+          })[0];
+          console.log(`[Meesho Extractor v4.0.0] Primary image from __NEXT_DATA__: ${best}`);
+          return best;
         }
       }
 
-      // 3. Try main product gallery in DOM
-      const mainImg = doc.querySelector('img[src*="images.meesho.com"]');
-      if (mainImg && mainImg.src) {
-        console.log(`[Meesho Extractor v3.9.0] Extracted primary image from DOM: ${mainImg.src}`);
+      // 2. Try og:image meta tag
+      const ogMeta = doc.querySelector('meta[property="og:image"], meta[name="og:image"]');
+      if (ogMeta && ogMeta.getAttribute('content') && ogMeta.getAttribute('content').includes('meesho.com')) {
+        const ogSrc = ogMeta.getAttribute('content');
+        console.log(`[Meesho Extractor v4.0.0] Primary image from og:image: ${ogSrc}`);
+        return ogSrc;
+      }
+
+      // 3. Try all img tags from the page, pick highest-res Meesho CDN image
+      const allImgs = Array.from(doc.querySelectorAll('img[src*="images.meesho.com"]'));
+      if (allImgs.length > 0) {
+        const mainImg = allImgs[0];
+        console.log(`[Meesho Extractor v4.0.0] Primary image from DOM img tag: ${mainImg.src}`);
         return mainImg.src;
+      }
+
+      // 4. Search raw HTML text for Meesho CDN image URLs
+      const rawImgMatches = htmlText.match(/https:\/\/images\.meesho\.com\/images\/products\/[^"'\s\\]+/g);
+      if (rawImgMatches && rawImgMatches.length > 0) {
+        console.log(`[Meesho Extractor v4.0.0] Primary image from raw HTML: ${rawImgMatches[0]}`);
+        return rawImgMatches[0];
       }
 
       return fallbackSrc;
@@ -338,7 +359,7 @@
   }
 
   /**
-   * Send high-res image URL to local server to crop bottom 40px and call Gemini Vision API
+   * Send full high-res product image URL to local server for complete Gemini Vision API scan
    */
   async function extractProductCodeWithGemini(productLink, imageUrl) {
     if (!imageUrl) return null;
@@ -395,6 +416,9 @@
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  // Version check log
+  console.log('[Meesho Extractor v4.0.0] Content script loaded. Full-image Gemini Vision OCR enabled.');
 
   function notifyProgress(msg) {
     chrome.runtime.sendMessage({
