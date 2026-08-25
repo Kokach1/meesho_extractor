@@ -1,5 +1,9 @@
-// Content Script for Meesho Product Rating Filter & Extractor v5.1.0
-// Calls Gemini Vision API directly from the browser — no Python server needed!
+// Content Script for Meesho Product Rating Filter & Extractor v5.2.0
+// For each product with rating > 4.0:
+//   1. Asks background.js to OPEN A REAL PRODUCT TAB
+//   2. Background extracts live-rendered product image URL from DOM
+//   3. Content script fetches image, crops bottom 80px, sends to Gemini Vision
+//   4. Returns the s-code (e.g. s-452654917) for Excel export
 
 (function () {
   if (window.__meeshoExtractorInjected) return;
@@ -16,27 +20,33 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
-  const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-  const GEMINI_PROMPT =
-    "This is a Meesho product image. There is a product code printed at the VERY BOTTOM of the image, " +
-    "typically in small text starting with 's-' followed by numbers (e.g. s-452654917, s-123456789). " +
-    "Look carefully at the bottom strip of the image and extract that code. " +
-    "Return ONLY the raw code (e.g. s-452654917) — nothing else, no explanation. " +
-    "If absolutely no code is visible at the bottom, return null.";
+  const GEMINI_API_URL =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
-  // Auto-start check if triggered by extension search navigation
+  // Prompt specifically tuned for Meesho bottom-of-image product codes
+  const GEMINI_PROMPT =
+    "This is the bottom strip of a Meesho product image. " +
+    "There is a product code printed at the bottom-left corner in small white or dark text, " +
+    "typically formatted like 's-452654917' (letter 's' followed by a dash and digits). " +
+    "Extract ONLY that code and return it exactly as printed. " +
+    "Do not explain. Do not add any other words. " +
+    "If you cannot see any such code, return the single word: null";
+
+  // ── Auto-start ─────────────────────────────────────────────────────────────
   chrome.storage.local.get(["autoStartExtraction"], (res) => {
-    if (res && res.autoStartExtraction && window.location.href.includes("meesho.com/search")) {
+    if (
+      res &&
+      res.autoStartExtraction &&
+      window.location.href.includes("meesho.com/search")
+    ) {
       chrome.storage.local.set({ autoStartExtraction: false });
       setTimeout(() => {
-        if (!isExtracting) {
-          console.log("[Meesho Extractor v5.0.0] Auto-starting extraction...");
-          startExtractionLoop();
-        }
-      }, 1200);
+        if (!isExtracting) startExtractionLoop();
+      }, 1500);
     }
   });
 
+  // ── Message Listener ────────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "START_EXTRACTION") {
       if (!isExtracting) startExtractionLoop();
@@ -49,11 +59,17 @@
       return true;
     }
     if (message.action === "GET_EXTRACTION_STATUS") {
-      sendResponse({ isExtracting, totalScannedCount, totalMatching: filteredProducts.length, products: filteredProducts });
+      sendResponse({
+        isExtracting,
+        totalScannedCount,
+        totalMatching: filteredProducts.length,
+        products: filteredProducts,
+      });
       return true;
     }
   });
 
+  // ── Main Extraction Loop ────────────────────────────────────────────────────
   async function startExtractionLoop() {
     isExtracting = true;
     seenProductLinks.clear();
@@ -62,36 +78,40 @@
     noNewProductsAttempts = 0;
     scrollAttempts = 0;
 
-    notifyProgress("Scanning products...");
+    notifyProgress("Starting scan...");
     await sleep(1000);
 
     while (isExtracting) {
       const prevSize = seenProductLinks.size;
       await scanProductCards();
 
-      if (seenProductLinks.size - prevSize === 0) noNewProductsAttempts++;
+      if (seenProductLinks.size === prevSize) noNewProductsAttempts++;
       else noNewProductsAttempts = 0;
 
       scrollAttempts++;
+
+      if (
+        !isExtracting ||
+        noNewProductsAttempts >= NO_NEW_PRODUCTS_LIMIT ||
+        scrollAttempts >= MAX_SCROLL_ATTEMPTS
+      )
+        break;
+
+      window.scrollBy({ top: Math.floor(window.innerHeight * 0.85), behavior: "smooth" });
       notifyProgress(
         noNewProductsAttempts > 0
-          ? `Loading more... (${noNewProductsAttempts}/${NO_NEW_PRODUCTS_LIMIT})`
+          ? `Waiting for more products... (${noNewProductsAttempts}/${NO_NEW_PRODUCTS_LIMIT})`
           : `Scanning... (${filteredProducts.length} matched so far)`
       );
-
-      if (!isExtracting || noNewProductsAttempts >= NO_NEW_PRODUCTS_LIMIT || scrollAttempts >= MAX_SCROLL_ATTEMPTS) break;
-
-      const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 200;
-      window.scrollBy({ top: Math.floor(window.innerHeight * 0.85), behavior: "smooth" });
-      if (atBottom) noNewProductsAttempts++;
-
       await sleep(SCROLL_WAIT_MS);
     }
 
-    isExtracting ? notifyComplete() : notifyStopped();
+    if (isExtracting) notifyComplete();
+    else notifyStopped();
     isExtracting = false;
   }
 
+  // ── Scan Visible Product Cards ──────────────────────────────────────────────
   async function scanProductCards() {
     const anchors = Array.from(document.querySelectorAll('a[href*="/p/"]'));
 
@@ -100,145 +120,106 @@
 
       const href = anchor.getAttribute("href");
       if (!href) continue;
-      const fullLink = href.startsWith("http") ? href : `https://www.meesho.com${href}`;
+      const fullLink = href.startsWith("http")
+        ? href
+        : `https://www.meesho.com${href}`;
       if (seenProductLinks.has(fullLink)) continue;
 
-      // Find card container
+      // Find card container element
       let cardEl = anchor;
       let p = anchor.parentElement;
-      for (let d = 0; d < 5 && p; d++, p = p.parentElement) {
-        if (p.querySelector('p, span') || p.innerText.includes("₹")) { cardEl = p; break; }
+      for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
+        if (p.innerText && p.innerText.includes("₹")) {
+          cardEl = p;
+          break;
+        }
       }
 
       seenProductLinks.add(fullLink);
       totalScannedCount++;
 
       const productData = extractCardData(cardEl, fullLink);
-      if (!productData || productData.rating === null || isNaN(productData.rating) || productData.rating <= MIN_RATING_THRESHOLD) continue;
+      if (
+        !productData ||
+        productData.rating === null ||
+        isNaN(productData.rating) ||
+        productData.rating <= MIN_RATING_THRESHOLD
+      )
+        continue;
 
-      console.log(`[v5.0.0] Match: rating=${productData.rating} → opening product page for code extraction: ${fullLink}`);
-      notifyProgress(`Found match (${productData.rating}★). Fetching product page...`);
+      console.log(
+        `[v5.2.0] ✅ Match: rating ${productData.rating}★ → ${fullLink}`
+      );
+      notifyProgress(
+        `Rating ${productData.rating}★ matched! Opening product page for code...`
+      );
 
-      // Open product page, get best image URL, crop bottom, call Gemini
-      const code = await extractCodeFromProductPage(fullLink, cardEl);
-      productData.code = code;
-      filteredProducts.push(productData);
-      notifyProgress(`Scanning... (${filteredProducts.length} matched — code: ${code || "null"})`);
-    }
-  }
+      // Ask background to open a real tab, get image URL, close tab
+      const imageUrl = await getProductImageUrlViaTab(fullLink);
 
-  async function extractCodeFromProductPage(productLink, cardEl) {
-    // Get Gemini API key from storage
-    const apiKey = await new Promise((r) => chrome.storage.local.get(["geminiApiKey"], (res) => r(res.geminiApiKey)));
-    if (!apiKey) {
-      console.warn("[v5.0.0] No Gemini API key configured. Open the extension popup and enter your key.");
-      return null;
-    }
-
-    try {
-      // Open product detail page in browser (has session cookies, bypasses 403)
-      console.log(`[v5.0.0] Opening product page: ${productLink}`);
-      const pageResp = await fetch(productLink, {
-        headers: { "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" }
-      });
-      if (!pageResp.ok) {
-        console.warn(`[v5.0.0] Product page returned HTTP ${pageResp.status}. Using catalog fallback image.`);
-        return await extractCodeFromCardImage(cardEl, apiKey);
-      }
-
-      const html = await pageResp.text();
-
-      // Extract best available high-res image URL from page HTML
-      const imageUrl = extractBestImageUrlFromHtml(html, cardEl);
       if (!imageUrl) {
-        console.warn("[v5.0.0] No image URL found in product page. Trying catalog fallback.");
-        return await extractCodeFromCardImage(cardEl, apiKey);
+        console.warn(`[v5.2.0] No image URL returned for: ${fullLink}`);
+        productData.code = null;
+      } else {
+        console.log(`[v5.2.0] Got image URL: ${imageUrl}`);
+        notifyProgress(`Fetching image & running Gemini OCR...`);
+
+        const b64 = await fetchImageBottomAsBase64(imageUrl);
+        if (!b64) {
+          console.warn(`[v5.2.0] Image fetch/crop failed for: ${imageUrl}`);
+          productData.code = null;
+        } else {
+          const apiKey = await getApiKey();
+          if (!apiKey) {
+            productData.code = null;
+          } else {
+            productData.code = await callGeminiVision(apiKey, b64);
+            console.log(`[v5.2.0] Code extracted: ${productData.code}`);
+          }
+        }
       }
 
-      console.log(`[v5.0.0] Primary high-res image URL: ${imageUrl}`);
-
-      // Fetch image and convert to base64 for Gemini
-      const b64Image = await fetchImageAsBase64(imageUrl);
-      if (!b64Image) {
-        console.warn("[v5.0.0] Could not load image. Trying catalog fallback.");
-        return await extractCodeFromCardImage(cardEl, apiKey);
-      }
-
-      // Call Gemini Vision with FULL image
-      return await callGeminiVision(apiKey, b64Image);
-
-    } catch (err) {
-      console.error("[v5.0.0] Product page extraction error:", err.message);
-      return await extractCodeFromCardImage(cardEl, apiKey);
+      filteredProducts.push(productData);
+      notifyProgress(
+        `${filteredProducts.length} matched — latest code: ${productData.code || "null"}`
+      );
     }
   }
 
-  function extractBestImageUrlFromHtml(html, cardEl) {
-    // Strategy 1: images.meesho.com URLs in __NEXT_DATA__ (sorted by resolution suffix)
-    const nextDataMatch = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
-    if (nextDataMatch) {
-      const urls = nextDataMatch[1].match(/https:\/\/images\.meesho\.com\/images\/products\/[^\s"'\\]+/g);
-      if (urls && urls.length > 0) {
-        const scored = urls.sort((a, b) => imgScore(b) - imgScore(a));
-        return scored[0];
-      }
-    }
-
-    // Strategy 2: og:image meta tag
-    const ogMatch = html.match(/property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-                 || html.match(/content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-    if (ogMatch && ogMatch[1].includes("meesho.com")) return ogMatch[1];
-
-    // Strategy 3: Any meesho image URL in raw HTML
-    const rawMatch = html.match(/https:\/\/images\.meesho\.com\/images\/products\/[^\s"'\\]+/);
-    if (rawMatch) return rawMatch[0];
-
-    // Strategy 4: Catalog thumbnail from DOM card
-    const imgEl = cardEl.querySelector("img[src], img[data-src]");
-    if (imgEl) {
-      let src = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || "";
-      if (src.startsWith("//")) src = "https:" + src;
-      if (src && !src.startsWith("data:image/svg")) return src;
-    }
-
-    return null;
+  // ── Ask Background to Open Real Product Tab ─────────────────────────────────
+  function getProductImageUrlViaTab(productUrl) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { action: "GET_PRODUCT_IMAGE_URL", productUrl },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            console.error("[v5.2.0] Background message error:", chrome.runtime.lastError.message);
+            resolve(null);
+          } else {
+            resolve(response || null);
+          }
+        }
+      );
+    });
   }
 
-  function imgScore(url) {
-    if (url.includes("_1024")) return 5;
-    if (url.includes("_512")) return 4;
-    if (url.includes("_256")) return 3;
-    if (url.includes("_128")) return 2;
-    if (url.includes("_80")) return 1;
-    return 3; // No suffix = assume medium/high
-  }
-
-  async function extractCodeFromCardImage(cardEl, apiKey) {
-    const imgEl = cardEl.querySelector("img[src], img[data-src]");
-    if (!imgEl) return null;
-    let src = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || "";
-    if (src.startsWith("//")) src = "https:" + src;
-    if (!src || src.startsWith("data:image/svg")) return null;
-    const b64 = await fetchImageAsBase64(src);
-    if (!b64) return null;
-    return await callGeminiVision(apiKey, b64);
-  }
-
-  // Fetch image via extension fetch() (bypasses CORS taint), then crop bottom 80px using Blob URL
-  async function fetchImageAsBase64(imgUrl) {
+  // ── Fetch Image & Crop Bottom 80px as Base64 ────────────────────────────────
+  async function fetchImageBottomAsBase64(imgUrl) {
     try {
-      // Extension host_permissions allow fetching *.meesho.com images directly
+      console.log(`[v5.2.0] Fetching image for bottom crop: ${imgUrl}`);
+
+      // Use extension fetch() — host_permissions cover *.meesho.com
       const resp = await fetch(imgUrl);
       if (!resp.ok) {
-        console.warn(`[v5.1.0] Image fetch failed HTTP ${resp.status}: ${imgUrl}`);
+        console.warn(`[v5.2.0] Image HTTP ${resp.status}: ${imgUrl}`);
         return null;
       }
 
       const arrayBuffer = await resp.arrayBuffer();
-      const mimeType = resp.headers.get('content-type') || 'image/jpeg';
+      const mimeType = resp.headers.get("content-type") || "image/jpeg";
       const blob = new Blob([arrayBuffer], { type: mimeType });
 
-      // Create a local blob URL — no CORS restriction on canvas export!
+      // Use Blob URL — avoids CORS canvas taint entirely
       const objectUrl = URL.createObjectURL(blob);
 
       return new Promise((resolve) => {
@@ -248,43 +229,51 @@
           try {
             const W = img.naturalWidth;
             const H = img.naturalHeight;
-            if (!W || !H) { URL.revokeObjectURL(objectUrl); return resolve(null); }
 
-            // Crop bottom 80px where the product code is printed
+            if (!W || !H) {
+              URL.revokeObjectURL(objectUrl);
+              return resolve(null);
+            }
+
+            // Crop the bottom 80 pixels (where product codes are printed)
             const canvas = document.createElement("canvas");
             const cropH = Math.min(80, H);
             const srcY = H - cropH;
             canvas.width = W;
             canvas.height = cropH;
+
             const ctx = canvas.getContext("2d");
             ctx.drawImage(img, 0, srcY, W, cropH, 0, 0, W, cropH);
 
             URL.revokeObjectURL(objectUrl);
 
             const dataUrl = canvas.toDataURL("image/png");
-            console.log(`[v5.1.0] Successfully cropped bottom ${cropH}px of ${W}x${H} image. Sending to Gemini...`);
+            console.log(
+              `[v5.2.0] Cropped bottom ${cropH}px of ${W}×${H} image ✓`
+            );
             resolve(dataUrl.split(",")[1]);
           } catch (e) {
             URL.revokeObjectURL(objectUrl);
-            console.error("[v5.1.0] Canvas crop error:", e.message);
+            console.error("[v5.2.0] Canvas error:", e.message);
             resolve(null);
           }
         };
 
         img.onerror = () => {
           URL.revokeObjectURL(objectUrl);
-          console.warn("[v5.1.0] Failed to render blob URL to image.");
+          console.warn("[v5.2.0] Blob image render failed.");
           resolve(null);
         };
 
         img.src = objectUrl;
       });
     } catch (err) {
-      console.error("[v5.1.0] fetchImageAsBase64 error:", err.message);
+      console.error("[v5.2.0] fetchImageBottomAsBase64 error:", err.message);
       return null;
     }
   }
 
+  // ── Gemini Vision API ───────────────────────────────────────────────────────
   async function callGeminiVision(apiKey, b64Image) {
     try {
       const url = `${GEMINI_API_URL}?key=${apiKey}`;
@@ -292,65 +281,131 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: GEMINI_PROMPT },
-              { inline_data: { mime_type: "image/png", data: b64Image } }
-            ]
-          }]
-        })
+          contents: [
+            {
+              parts: [
+                { text: GEMINI_PROMPT },
+                {
+                  inline_data: {
+                    mime_type: "image/png",
+                    data: b64Image,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 50,
+          },
+        }),
       });
 
       if (!resp.ok) {
-        const err = await resp.text();
-        console.warn(`[v5.0.0] Gemini API returned HTTP ${resp.status}: ${err.slice(0, 200)}`);
+        const errText = await resp.text();
+        console.warn(
+          `[v5.2.0] Gemini HTTP ${resp.status}: ${errText.slice(0, 200)}`
+        );
         return null;
       }
 
       const data = await resp.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return sanitizeGeminiOutput(rawText);
+      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return sanitize(raw);
     } catch (err) {
-      console.error("[v5.0.0] Gemini Vision API error:", err.message);
+      console.error("[v5.2.0] Gemini error:", err.message);
       return null;
     }
   }
 
-  function sanitizeGeminiOutput(text) {
+  function sanitize(text) {
     if (!text) return null;
-    let cleaned = text.replace(/```/g, "").replace(/`/g, "").trim();
+    let s = text
+      .replace(/```/g, "")
+      .replace(/`/g, "")
+      .replace(/\n/g, " ")
+      .trim();
 
-    const prefixes = ["the code is:", "code:", "extracted code:", "text:", "extracted text:", "visible text:", "the text is:"];
-    const lower = cleaned.toLowerCase();
+    // Strip common preambles
+    const prefixes = [
+      "the code is:",
+      "code:",
+      "extracted code:",
+      "extracted text:",
+      "text:",
+    ];
+    const lower = s.toLowerCase();
     for (const p of prefixes) {
-      if (lower.startsWith(p)) { cleaned = cleaned.slice(p.length).trim(); break; }
+      if (lower.startsWith(p)) {
+        s = s.slice(p.length).trim();
+        break;
+      }
     }
 
-    const nullVariants = ["null", "null.", "none", "none.", "n/a", "no code", "no readable text", "no text", "no visible code", "no visible text"];
-    if (nullVariants.includes(cleaned.toLowerCase()) || cleaned.length === 0) return null;
-    return cleaned;
+    const nullWords = [
+      "null",
+      "null.",
+      "none",
+      "none.",
+      "n/a",
+      "no code",
+      "no text",
+      "no visible code",
+      "no visible text",
+      "no readable",
+      "not visible",
+      "cannot see",
+      "i cannot",
+    ];
+    if (nullWords.includes(s.toLowerCase()) || s.length === 0) return null;
+    return s;
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  async function getApiKey() {
+    return new Promise((r) =>
+      chrome.storage.local.get(["geminiApiKey"], (res) => r(res.geminiApiKey))
+    );
   }
 
   function extractCardData(cardEl, fullLink) {
     const rawText = cardEl.innerText || "";
-    const lines = rawText.split("\n").map(s => s.trim()).filter(Boolean);
+    const lines = rawText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
 
     let price = "N/A";
     const pm = rawText.match(/₹\s*[\d,]+/);
     if (pm) price = pm[0].replace(/\s+/g, "");
 
     let rating = null;
-    const re = cardEl.querySelector('[class*="rating"], [class*="Rating"], [class*="star"]');
-    if (re) { const m = re.innerText.match(/\b([1-5]\.\d|[1-5])\b/); if (m) rating = parseFloat(m[1]); }
-    if (rating === null) { const rm = rawText.match(/\b([1-5]\.\d)\b/); if (rm) rating = parseFloat(rm[1]); }
+    const re = cardEl.querySelector(
+      '[class*="rating"], [class*="Rating"], [class*="star"]'
+    );
+    if (re) {
+      const m = re.innerText.match(/\b([1-5]\.\d|[1-5])\b/);
+      if (m) rating = parseFloat(m[1]);
+    }
+    if (rating === null) {
+      const rm = rawText.match(/\b([1-5]\.\d)\b/);
+      if (rm) rating = parseFloat(rm[1]);
+    }
 
     let productName = "";
-    const te = cardEl.querySelector('p[class*="title"], p[class*="Name"], p');
-    if (te && te.innerText.trim().length > 3 && !te.innerText.includes("₹")) productName = te.innerText.trim();
+    const te = cardEl.querySelector("p");
+    if (te && !te.innerText.includes("₹") && te.innerText.trim().length > 3)
+      productName = te.innerText.trim();
     if (!productName) {
       for (const line of lines) {
-        if (!line.includes("₹") && !line.match(/\b[1-5]\.\d\b/) && line.length > 3 && !line.includes("Free Delivery")) {
-          productName = line; break;
+        if (
+          !line.includes("₹") &&
+          !line.match(/\b[1-5]\.\d\b/) &&
+          line.length > 3 &&
+          !line.includes("Free Delivery")
+        ) {
+          productName = line;
+          break;
         }
       }
     }
@@ -363,20 +418,50 @@
       if (t && t.length < 30) type = t.trim();
     }
 
-    return { product_name: productName.trim().replace(/\s+/g, " "), price, type, product_link: fullLink, rating, code: null };
+    return {
+      product_name: productName.trim().replace(/\s+/g, " "),
+      price,
+      type,
+      product_link: fullLink,
+      rating,
+      code: null,
+    };
   }
 
-  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
 
   function notifyProgress(msg) {
-    chrome.runtime.sendMessage({ action: "EXTRACTION_PROGRESS", progressMessage: msg, scannedCount: totalScannedCount, products: filteredProducts }).catch(() => {});
+    chrome.runtime
+      .sendMessage({
+        action: "EXTRACTION_PROGRESS",
+        progressMessage: msg,
+        scannedCount: totalScannedCount,
+        products: filteredProducts,
+      })
+      .catch(() => {});
   }
   function notifyComplete() {
-    chrome.runtime.sendMessage({ action: "EXTRACTION_COMPLETE", scannedCount: totalScannedCount, products: filteredProducts }).catch(() => {});
+    chrome.runtime
+      .sendMessage({
+        action: "EXTRACTION_COMPLETE",
+        scannedCount: totalScannedCount,
+        products: filteredProducts,
+      })
+      .catch(() => {});
   }
   function notifyStopped() {
-    chrome.runtime.sendMessage({ action: "EXTRACTION_STOPPED", scannedCount: totalScannedCount, products: filteredProducts }).catch(() => {});
+    chrome.runtime
+      .sendMessage({
+        action: "EXTRACTION_STOPPED",
+        scannedCount: totalScannedCount,
+        products: filteredProducts,
+      })
+      .catch(() => {});
   }
 
-  console.log("[Meesho Extractor v5.1.0] Loaded. Direct Gemini Vision (no server required). CORS-safe image fetch via Blob URL.");
+  console.log(
+    "[Meesho Extractor v5.2.0] Loaded. Opens real product tabs via background.js for image extraction."
+  );
 })();
