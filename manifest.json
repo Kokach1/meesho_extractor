@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "4.0.0",
-  "description": "Search Meesho products, auto-extract listings, filter items with >4.0 ratings, open product detail pages for full high-res Gemini Vision OCR, and export to Excel (XLSX).",
+  "version": "5.0.0",
+  "description": "Search Meesho products, filter >4.0 ratings, open product pages, run full-image Gemini Vision OCR for bottom code extraction. No server needed.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -11,8 +11,7 @@
   ],
   "host_permissions": [
     "*://*.meesho.com/*",
-    "http://127.0.0.1:5000/*",
-    "http://localhost:5000/*"
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js"

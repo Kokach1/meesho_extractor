@@ -497,6 +497,98 @@ body {
   font-style: italic;
 }
 
+/* API Key Card */
+.api-key-card {
+  background: rgba(244, 51, 151, 0.06);
+  border: 1px solid rgba(244, 51, 151, 0.2);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.api-key-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.api-key-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-main);
+  flex: 1;
+}
+
+.edit-key-btn {
+  font-size: 11px;
+  color: var(--primary-color);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0;
+}
+
+.api-key-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.api-key-input-row.hidden {
+  display: none;
+}
+
+.api-key-input {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1.5px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+}
+
+.api-key-input:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(244, 51, 151, 0.15);
+}
+
+.btn-save-key {
+  height: 32px;
+  padding: 0 12px;
+  background: var(--primary-color);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.api-key-status {
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.api-key-status.hidden {
+  display: none;
+}
+
+.api-key-status.success {
+  background: var(--success-bg);
+  color: #6ee7b7;
+}
+
+.api-key-status.error {
+  background: var(--error-bg);
+  color: #fda4af;
+}
+
 /* Error Card */
 .error-card {
   background: var(--error-bg);
