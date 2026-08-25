@@ -149,16 +149,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     try {
+      // Columns: Product Name, Price, Type, Product Link, Rating / 5, Code
       const exportRows = currentProducts.map((p) => ({
         "Product Name": p.product_name || "N/A",
         "Price": p.price || "N/A",
         "Type": p.type || "General",
         "Product Link": p.product_link || "",
-        "Rating / 5": p.rating !== null ? p.rating : "N/A"
+        "Rating / 5": p.rating !== null ? p.rating : "N/A",
+        "Code": p.code !== null && p.code !== undefined ? p.code : null
       }));
 
       const worksheet = XLSX.utils.json_to_sheet(exportRows);
 
+      // Hyperlink formatting for "Product Link" column (Column index 3)
       const range = XLSX.utils.decode_range(worksheet["!ref"]);
       for (let R = range.s.r + 1; R <= range.e.r; ++R) {
         const cellRef = XLSX.utils.encode_cell({ r: R, c: 3 });
@@ -173,7 +176,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         { wch: 12 }, // Price
         { wch: 18 }, // Type
         { wch: 45 }, // Product Link
-        { wch: 12 }  // Rating / 5
+        { wch: 12 }, // Rating / 5
+        { wch: 18 }  // Code
       ];
 
       const workbook = XLSX.utils.book_new();
@@ -229,7 +233,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!products || products.length === 0) {
       resultsTableBody.innerHTML = `
         <tr class="empty-row">
-          <td colspan="5">No extracted products with >4.0 rating yet. Enter a product name above to search & auto-extract.</td>
+          <td colspan="6">No extracted products with >4.0 rating yet. Enter a product name above to search & auto-extract.</td>
         </tr>
       `;
       return;
@@ -241,6 +245,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const price = escapeHtml(p.price);
         const type = escapeHtml(p.type);
         const rating = p.rating !== null ? p.rating.toFixed(1) : "N/A";
+        const codeDisplay = p.code ? `<span class="code-pill">${escapeHtml(p.code)}</span>` : '<span class="null-code">null</span>';
         const link = p.product_link;
 
         return `
@@ -249,6 +254,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <td class="prod-price">${price}</td>
             <td class="prod-type">${type}</td>
             <td><span class="rating-pill">${rating} ★</span></td>
+            <td>${codeDisplay}</td>
             <td>
               <a href="${link}" target="_blank" class="prod-link-btn" title="Open product page">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -1,4 +1,4 @@
-// Content Script for Meesho Product Rating Filter & Extractor
+// Content Script for Meesho Product Rating Filter & Extractor with Bottom 40px Image OCR
 
 (function () {
   // Prevent duplicate script injection
@@ -18,6 +18,7 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
+  const OCR_TIMEOUT_MS = 3000;
 
   // Auto-start check if triggered by extension search navigation
   chrome.storage.local.get(["autoStartExtraction"], (res) => {
@@ -76,7 +77,7 @@
       const initialSeenSize = seenProductLinks.size;
 
       // Scan currently visible products in DOM
-      scanProductCards();
+      await scanProductCards();
 
       const newProductsFound = seenProductLinks.size - initialSeenSize;
       if (newProductsFound === 0) {
@@ -135,24 +136,26 @@
     }
   }
 
-  function scanProductCards() {
-    // Strategy 1: Find all anchor tags pointing to Meesho product details (/p/)
+  async function scanProductCards() {
+    // Find all anchor tags pointing to Meesho product details (/p/)
     const productAnchors = Array.from(document.querySelectorAll('a[href*="/p/"]'));
 
-    productAnchors.forEach((anchor) => {
+    for (const anchor of productAnchors) {
+      if (!isExtracting) break;
+
       try {
         const href = anchor.getAttribute("href");
-        if (!href) return;
+        if (!href) continue;
 
         // Build absolute product URL
         const fullLink = href.startsWith("http") ? href : `https://www.meesho.com${href}`;
 
         // Deduplicate product cards by link
         if (seenProductLinks.has(fullLink)) {
-          return;
+          continue;
         }
 
-        // Find product card container (either anchor itself or parent element)
+        // Find product card container
         let cardElement = anchor;
         let parent = anchor.parentElement;
         let depth = 0;
@@ -172,7 +175,7 @@
         seenProductLinks.add(fullLink);
         totalScannedCount++;
 
-        // Extract product metadata
+        // Extract basic product metadata
         const productData = extractCardData(cardElement, fullLink);
 
         // Filter condition: rating strictly > 4.0 out of 5
@@ -182,12 +185,19 @@
           !isNaN(productData.rating) &&
           productData.rating > MIN_RATING_THRESHOLD
         ) {
+          // Perform bottom 40px image cropping & OCR for product code extraction
+          const productCode = await extractProductCodeFromCard(cardElement);
+          productData.code = productCode; // String or null
+
           filteredProducts.push(productData);
+
+          // Update progress live
+          notifyProgress(`Scanning products... (${filteredProducts.length} high-rated found)`);
         }
       } catch (err) {
         console.error("Error processing product card:", err);
       }
-    });
+    }
   }
 
   function extractCardData(cardEl, fullLink) {
@@ -263,8 +273,96 @@
       price: price,
       type: type,
       product_link: fullLink,
-      rating: rating
+      rating: rating,
+      code: null // Default fallback
     };
+  }
+
+  /**
+   * Crop bottom 40 pixels of product image and run OCR with 3-second timeout
+   */
+  async function extractProductCodeFromCard(cardEl) {
+    return new Promise((resolve) => {
+      let isSettled = false;
+
+      const safeResolve = (val) => {
+        if (!isSettled) {
+          isSettled = true;
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          resolve(val);
+        }
+      };
+
+      // Strict 3-second timeout requirement
+      const timeoutTimer = setTimeout(() => {
+        safeResolve(null);
+      }, OCR_TIMEOUT_MS);
+
+      try {
+        const imgEl = cardEl.querySelector("img[src], img[srcset], img[data-src]");
+        if (!imgEl) {
+          return safeResolve(null);
+        }
+
+        const imgSrc = imgEl.getAttribute("data-src") || imgEl.src;
+        if (!imgSrc || imgSrc.startsWith("data:image/svg")) {
+          return safeResolve(null);
+        }
+
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+
+        img.onload = async () => {
+          try {
+            if (!img.naturalWidth || !img.naturalHeight) {
+              return safeResolve(null);
+            }
+
+            // Create Canvas & Crop bottom 40 pixels
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+
+            const cropHeight = Math.min(40, img.naturalHeight);
+            const sourceY = Math.max(0, img.naturalHeight - cropHeight);
+
+            canvas.width = img.naturalWidth;
+            canvas.height = cropHeight;
+
+            ctx.drawImage(
+              img,
+              0, sourceY, img.naturalWidth, cropHeight,
+              0, 0, img.naturalWidth, cropHeight
+            );
+
+            const croppedDataUrl = canvas.toDataURL("image/png");
+
+            // Run OCR if Tesseract library is loaded
+            if (typeof Tesseract !== "undefined" && Tesseract.recognize) {
+              const res = await Tesseract.recognize(croppedDataUrl, "eng");
+              if (res && res.data && res.data.text) {
+                const text = sanitizeCodeText(res.data.text);
+                return safeResolve(text ? text : null);
+              }
+            }
+            safeResolve(null);
+          } catch (e) {
+            safeResolve(null);
+          }
+        };
+
+        img.onerror = () => safeResolve(null);
+        img.src = imgSrc;
+      } catch (err) {
+        safeResolve(null);
+      }
+    });
+  }
+
+  function sanitizeCodeText(raw) {
+    if (!raw) return null;
+    const cleaned = raw.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    if (cleaned.length < 2) return null;
+    return cleaned;
   }
 
   function sanitizeText(str) {

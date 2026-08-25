@@ -27,8 +27,8 @@
 }
 
 body {
-  width: 440px;
-  max-height: 590px;
+  width: 480px;
+  max-height: 600px;
   background: var(--bg-gradient);
   color: var(--text-main);
   font-family: var(--font-family);
@@ -407,15 +407,15 @@ body {
   background: #1f1f23;
   color: var(--text-muted);
   font-weight: 600;
-  padding: 8px 8px;
+  padding: 8px 6px;
   border-bottom: 1px solid var(--card-border);
-  font-size: 10.5px;
+  font-size: 10px;
   text-transform: uppercase;
   z-index: 2;
 }
 
 .results-table td {
-  padding: 8px 8px;
+  padding: 6px 6px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   color: var(--text-main);
   vertical-align: middle;
@@ -426,7 +426,7 @@ body {
 }
 
 .prod-name {
-  max-width: 140px;
+  max-width: 120px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -440,16 +440,40 @@ body {
 
 .prod-type {
   color: var(--text-muted);
+  max-width: 70px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .rating-pill {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 1px 5px;
   background: rgba(16, 185, 129, 0.15);
   color: #34d399;
   border-radius: 4px;
   font-weight: 700;
-  font-size: 11px;
+  font-size: 10.5px;
+}
+
+.code-pill {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 10px;
+  max-width: 60px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.null-code {
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-style: italic;
 }
 
 .prod-link-btn {
