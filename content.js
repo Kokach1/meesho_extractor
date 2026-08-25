@@ -27,7 +27,7 @@
       chrome.storage.local.set({ autoStartExtraction: false });
       setTimeout(() => {
         if (!isExtracting) {
-          console.log("Auto-starting product extraction on search load...");
+          console.log("[Meesho Extractor] Auto-starting extraction on search page load...");
           startExtractionLoop();
         }
       }, 1200);
@@ -101,12 +101,12 @@
       }
 
       if (noNewProductsAttempts >= NO_NEW_PRODUCTS_LIMIT) {
-        console.log("No new products loaded after 3 scroll attempts. Stopping.");
+        console.log("[Meesho Extractor] No new products loaded after 3 scroll attempts. Stopping.");
         break;
       }
 
       if (scrollAttempts >= MAX_SCROLL_ATTEMPTS) {
-        console.log("Reached maximum scroll limit (100). Stopping.");
+        console.log("[Meesho Extractor] Reached maximum scroll limit (100). Stopping.");
         break;
       }
 
@@ -186,6 +186,8 @@
           !isNaN(productData.rating) &&
           productData.rating > MIN_RATING_THRESHOLD
         ) {
+          console.log(`[Meesho Extractor] Rating ${productData.rating} > 4.0 for '${productData.product_name}'. Running EasyOCR...`);
+
           // Perform bottom 40px image cropping & EasyOCR service call for product code
           const productCode = await extractProductCodeFromCard(cardElement);
           productData.code = productCode; // String or null
@@ -284,53 +286,64 @@
    */
   async function extractProductCodeFromCard(cardEl) {
     try {
-      const imgEl = cardEl.querySelector("img[src], img[srcset], img[data-src]");
+      // Robust Image Selector Strategy
+      const imgEl = cardEl.querySelector("img[src], img[data-src], img[srcset], img");
       if (!imgEl) {
+        console.log("[Meesho Extractor] No product img tag found in card.");
         return null;
       }
 
-      const imgSrc = imgEl.getAttribute("data-src") || imgEl.src;
+      let imgSrc = imgEl.currentSrc || imgEl.src || imgEl.getAttribute("data-src") || imgEl.getAttribute("src") || "";
+      if (imgSrc.startsWith("//")) {
+        imgSrc = "https:" + imgSrc;
+      } else if (imgSrc.startsWith("/")) {
+        imgSrc = "https://www.meesho.com" + imgSrc;
+      }
+
       if (!imgSrc || imgSrc.startsWith("data:image/svg")) {
+        console.log("[Meesho Extractor] Invalid product image URL.");
         return null;
       }
 
-      // 1. Crop bottom 40 pixels using Canvas
+      // Try local Canvas crop (if not blocked by CORS)
       const croppedDataUrl = await cropBottom40Pixels(imgSrc);
-      if (!croppedDataUrl) {
-        return null;
-      }
 
-      // 2. Call local EasyOCR Python service (http://127.0.0.1:5000/ocr) with 10-sec timeout
+      // Send payload with BOTH base64 cropped image & direct CDN URL to Python OCR server
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
 
       try {
+        console.log(`[Meesho Extractor] Sending image payload to EasyOCR server (${EASY_OCR_SERVICE_URL})...`);
         const response = await fetch(EASY_OCR_SERVICE_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: croppedDataUrl }),
+          body: JSON.stringify({
+            image: croppedDataUrl || null,
+            image_url: imgSrc
+          }),
           signal: controller.signal
         });
 
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-          console.warn("EasyOCR service returned non-200 status");
+          console.warn("[Meesho Extractor] EasyOCR server returned non-200 HTTP status.");
           return null;
         }
 
         const data = await response.json();
         if (data && data.code) {
+          console.log(`[Meesho Extractor] OCR Code Received: '${data.code}'`);
           return sanitizeCodeText(data.code);
         }
         return null;
       } catch (fetchErr) {
         clearTimeout(timeoutId);
-        // Fault tolerant: Return null if local Python service is offline, erroring, or timed out
-        console.warn("EasyOCR local service unavailable or timed out (>10s):", fetchErr.message);
+        console.warn("[Meesho Extractor] EasyOCR service unavailable or timed out:", fetchErr.message);
         return null;
       }
     } catch (err) {
+      console.error("[Meesho Extractor] Image OCR error:", err);
       return null;
     }
   }
@@ -375,7 +388,7 @@
   function sanitizeCodeText(raw) {
     if (!raw) return null;
     const cleaned = raw.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-    if (cleaned.length < 2) return null;
+    if (cleaned.length < 1) return null;
     return cleaned;
   }
 
