@@ -195,7 +195,7 @@ async function getCodeFromGoogleLens(imageUrls) {
             return { code: null, error: "Google Lens requested a CAPTCHA" };
           }
 
-          // Lens exposes optical text only after this control is selected.
+          // Lens exposes optical text inside the image only after "Select text" is activated.
           for (let attempt = 0; attempt < 8; attempt += 1) {
             const target = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
               .find((element) => element.textContent?.trim().toLowerCase() === "select text");
@@ -205,33 +205,64 @@ async function getCodeFromGoogleLens(imageUrls) {
             }
             await sleepInPage(500);
           }
-          await sleepInPage(1400);
-          const rawPageText = pageText();
-          const isolatedCode = findCode(rawPageText);
+          await sleepInPage(800);
 
-          // Clean Lens UI noise to isolate optical text extracted from the image
-          const uiNoisePatterns = [
-            /^search$/i, /^select text$/i, /^copy text$/i, /^listen$/i, /^translate$/i,
-            /^feedback$/i, /^share$/i, /^send to computer$/i, /^select all text$/i,
-            /^visual matches$/i, /^exact matches$/i, /^ai overview$/i,
-            /^add to your search$/i, /^show original$/i, /^about this page$/i,
-            /^edit visual search$/i
-          ];
+          // Try clicking "Select all text" if available to highlight all image text
+          const selectAllBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
+            .find((element) => /select all text/i.test(element.textContent?.trim() || ""));
+          if (selectAllBtn) {
+            (selectAllBtn.closest('button, [role="button"], a') || selectAllBtn).click();
+            await sleepInPage(600);
+          }
 
-          const textLines = rawPageText
-            .split("\n")
-            .map((line) => line.trim())
-            .filter((line) => {
-              if (!line || line.length < 2) return false;
-              for (const pat of uiNoisePatterns) {
-                if (pat.test(line)) return false;
+          // Extract text detected specifically inside the image
+          const getImageText = () => {
+            // 1. Current text selection in Lens image pane
+            const sel = window.getSelection()?.toString()?.trim();
+            if (sel && sel.length > 0 && !/select text|copy text|translate|search/i.test(sel)) {
+              return sel;
+            }
+
+            // 2. Specific Lens OCR text overlay elements
+            const ocrEls = Array.from(
+              document.querySelectorAll('[data-text], [data-string], .gws-lens-panes__text-region, [role="region"] span, .c2miie, .V4v0ee, .y24T4d')
+            );
+            if (ocrEls.length > 0) {
+              const texts = ocrEls
+                .map((el) => (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim())
+                .filter((t) => t.length > 0 && !/select text|copy text|translate|search|feedback/i.test(t));
+              if (texts.length > 0) {
+                return Array.from(new Set(texts)).join(" ");
               }
-              return true;
-            });
+            }
 
-          const cleanLensText = textLines.join(" ").trim() || rawPageText.trim() || null;
+            // 3. Fallback: filter page innerText to strip Google UI noise
+            const raw = document.body?.innerText || "";
+            const noiseWords = [
+              "google", "lens", "search", "select text", "copy text", "listen", "translate",
+              "feedback", "share", "send to computer", "select all text", "visual matches",
+              "exact matches", "ai overview", "add to your search", "show original",
+              "about this page", "edit visual search", "privacy", "terms"
+            ];
+            const lines = raw
+              .split("\n")
+              .map((l) => l.trim())
+              .filter((line) => {
+                if (!line || line.length < 1) return false;
+                const lower = line.toLowerCase();
+                return !noiseWords.some((w) => lower === w || lower.startsWith(w + " ") || lower.endsWith(" " + w));
+              });
+            return lines.join(" ").trim() || null;
+          };
 
-          return { code: isolatedCode, extractedText: cleanLensText, error: null };
+          const imageText = getImageText();
+          const isolatedCode = findCode(imageText || pageText());
+
+          return {
+            code: isolatedCode,
+            extractedText: imageText,
+            error: null,
+          };
         },
       });
       const response = result?.[0]?.result;
