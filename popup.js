@@ -151,7 +151,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function renderResultsTable(products) {
     if (!products || products.length === 0) {
-      resultsTableBody.innerHTML = `<tr class="empty-row"><td colspan="6">No products with >4.0 rating yet. Start the local OCR server, then enter a product name to search.</td></tr>`;
+      resultsTableBody.innerHTML = `<tr class="empty-row"><td colspan="6">No products with >4.0 rating yet. Enter a product name to search; Google Lens reads the code watermark automatically.</td></tr>`;
       return;
     }
     resultsTableBody.innerHTML = products.map(p => {

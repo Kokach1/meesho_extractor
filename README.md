@@ -1,38 +1,20 @@
-# Meesho Product Rating & Supplier-Code Extractor (v5.5.0)
+# Meesho Product Rating & Supplier-Code Extractor (v5.6.0)
 
-Chrome extension plus a local RapidOCR service that scans Meesho search results, keeps products rated above 4.0, reads supplier codes such as `s-537307277` from product-image watermarks, and exports the results to Excel.
+This Chrome extension scans Meesho search results, keeps products rated above 4.0, and uses Google Lens to read supplier-code watermarks such as `s-452654917` from product images. Results can be exported to Excel.
 
 ## How it works
 
 1. The search-page script finds product cards with ratings strictly greater than `4.0`.
-2. The background worker opens each matching product page and selects its real product-gallery images. Marketing and recommendation images are excluded.
-3. The worker fetches those image bytes through Chrome and sends up to three gallery images to the local OCR service. This avoids server-side CDN/proxy failures.
-4. The OCR service converts AVIF/WebP/JPEG to PNG, scans the full image and lower image bands, normalizes common OCR mistakes, and returns an `s-<digits>` code when found.
+2. The service worker opens each matching product page and selects its product-gallery images only; banners and recommendation cards are excluded.
+3. The worker crops and enlarges only the lower-left watermark area, uploads that crop to Google Lens, selects **Select text**, and extracts the first matching `s-<digits>` value.
+4. The first code found is shown in the results table and Excel export.
 
-## Setup
+Google Lens runs in an inactive tab. No local OCR server, Python installation, API key, or `.env` file is required.
 
-1. Install Python dependencies:
+## Install and use
 
-   ```powershell
-   py -3 -m pip install -r requirements.txt
-   ```
+1. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select this folder.
+2. Reload the extension after any code changes.
+3. Open a Meesho search page, select **Start Extraction**, and export the results when complete.
 
-2. Start the local OCR server and leave it running:
-
-   ```powershell
-   py -3 ocr_server.py
-   ```
-
-   Confirm `http://127.0.0.1:5000/health` reports `"status": "ok"`.
-
-3. Open `chrome://extensions`, enable Developer mode, select **Load unpacked**, and choose this folder. Reload the extension after code changes.
-
-4. Open a Meesho search page (or search from the extension), then select **Start Extraction**. Export to Excel after processing completes.
-
-No Gemini key, Google Lens account, Selenium driver, or external OCR API is needed.
-
-## Troubleshooting
-
-- If all codes show `null`, first ensure the OCR server is running and reload the extension.
-- The code must be visually present and readable in at least one of the first three product-gallery images; products without a visible supplier watermark correctly return `null`.
-- Open the extension's service-worker console from `chrome://extensions` to see image/OCR errors.
+If Google Lens presents a CAPTCHA, complete it normally in Chrome and retry; the extension does not bypass Google security checks.

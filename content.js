@@ -1,5 +1,5 @@
-// Meesho search-page extractor. Product image bytes are retrieved by the
-// extension service worker and sent to the local RapidOCR server.
+// Meesho search-page extractor. Supplier-code watermarks are read using
+// Google Lens' text-selection mode.
 
 (function () {
   if (window.__meeshoExtractorInjected) return;
@@ -85,11 +85,11 @@
       const productData = extractCardData(findProductCard(anchor), fullLink);
       if (!productData || productData.rating === null || productData.rating <= MIN_RATING_THRESHOLD) continue;
 
-      notifyProgress(`Rating ${productData.rating}★ matched! Reading the product image...`);
-      const images = await getProductImages(fullLink);
+      notifyProgress(`Rating ${productData.rating}★ matched! Opening Google Lens...`);
+      const imageUrls = await getProductImageUrls(fullLink);
       if (!isExtracting) break;
 
-      productData.code = images.length ? await callLocalOCRServer(images) : null;
+      productData.code = imageUrls.length ? await getCodeFromGoogleLens(imageUrls) : null;
       filteredProducts.push(productData);
       notifyProgress(`${filteredProducts.length} matched — latest code: ${productData.code || "not found"}`);
     }
@@ -116,41 +116,30 @@
     return anchor;
   }
 
-  function getProductImages(productUrl) {
+  function getProductImageUrls(productUrl) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: "GET_PRODUCT_IMAGES", productUrl }, (response) => {
+      chrome.runtime.sendMessage({ action: "GET_PRODUCT_IMAGE_URLS", productUrl }, (response) => {
         if (chrome.runtime.lastError) {
           console.error("[Meesho Extractor] Image retrieval error:", chrome.runtime.lastError.message);
           resolve([]);
           return;
         }
-        resolve(Array.isArray(response) ? response.filter((item) => item?.image) : []);
+        resolve(Array.isArray(response) ? response.filter(Boolean) : []);
       });
     });
   }
 
-  async function callLocalOCRServer(images) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
-    try {
-      const response = await fetch("http://127.0.0.1:5000/ocr", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ images: images.map((item) => item.image) }),
-        signal: controller.signal,
+  function getCodeFromGoogleLens(imageUrls) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "GET_CODE_FROM_GOOGLE_LENS", imageUrls }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("[Meesho Extractor] Google Lens error:", chrome.runtime.lastError.message);
+          resolve(null);
+          return;
+        }
+        resolve(typeof response?.code === "string" && response.code ? response.code : null);
       });
-      if (!response.ok) {
-        console.warn(`[Meesho Extractor] OCR server returned HTTP ${response.status}`);
-        return null;
-      }
-      const data = await response.json();
-      return typeof data.code === "string" && data.code ? data.code : null;
-    } catch (error) {
-      console.error("[Meesho Extractor] Local OCR request failed:", error.message);
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
+    });
   }
 
   function extractCardData(card, productLink) {
@@ -186,5 +175,5 @@
   const notifyComplete = () => sendState("EXTRACTION_COMPLETE", "Completed");
   const notifyStopped = () => sendState("EXTRACTION_STOPPED", "Stopped");
 
-  console.log("[Meesho Extractor] Search content script loaded (local RapidOCR).");
+  console.log("[Meesho Extractor] Search content script loaded (Google Lens).");
 })();

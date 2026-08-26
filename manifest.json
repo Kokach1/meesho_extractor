@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "5.5.0",
-  "description": "Extracts rated product-gallery image bytes and processes them locally with RapidOCR for supplier-code extraction.",
+  "version": "5.6.0",
+  "description": "Uses Google Lens text recognition on rated product-gallery images to extract supplier codes.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -11,7 +11,8 @@
   ],
   "host_permissions": [
     "*://*.meesho.com/*",
-    "http://127.0.0.1:5000/*"
+    "*://lens.google.com/*",
+    "*://www.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"

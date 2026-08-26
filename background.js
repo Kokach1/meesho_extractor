@@ -1,8 +1,54 @@
-// Background service worker: retrieve real product-gallery images for local OCR.
+// Background service worker: select product-gallery images and read their
+// supplier-code watermark through Google Lens' "Select text" mode.
 
-const TAB_TIMEOUT_MS = 25000;
+const TAB_TIMEOUT_MS = 30000;
 const HYDRATION_WAIT_MS = 1500;
+const LENS_WAIT_MS = 3500;
 const MAX_GALLERY_IMAGES = 3;
+const WATERMARK_LEFT_FRACTION = 0.6;
+const WATERMARK_TOP_FRACTION = 0.74;
+const WATERMARK_SCALE = 4;
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function toBase64(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function cropWatermarkForLens(imageUrl) {
+  const response = await fetch(imageUrl, { credentials: "omit" });
+  if (!response.ok) throw new Error(`Image download failed (${response.status})`);
+
+  const bitmap = await createImageBitmap(await response.blob());
+  const cropX = 0;
+  const cropY = Math.floor(bitmap.height * WATERMARK_TOP_FRACTION);
+  const cropWidth = Math.max(1, Math.floor(bitmap.width * WATERMARK_LEFT_FRACTION));
+  const cropHeight = Math.max(1, bitmap.height - cropY);
+  const canvas = new OffscreenCanvas(cropWidth * WATERMARK_SCALE, cropHeight * WATERMARK_SCALE);
+  const context = canvas.getContext("2d");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(
+    bitmap,
+    cropX, cropY, cropWidth, cropHeight,
+    0, 0, canvas.width, canvas.height,
+  );
+  bitmap.close();
+  const png = await canvas.convertToBlob({ type: "image/png" });
+  return {
+    imageBase64: toBase64(await png.arrayBuffer()),
+    width: canvas.width,
+    height: canvas.height,
+  };
+}
 
 function waitForTabComplete(tabId) {
   return new Promise((resolve, reject) => {
@@ -25,29 +71,12 @@ function waitForTabComplete(tabId) {
   });
 }
 
-function toBase64(arrayBuffer) {
-  const bytes = new Uint8Array(arrayBuffer);
-  const chunkSize = 0x8000;
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-  return btoa(binary);
-}
-
-async function fetchImageAsBase64(url) {
-  const response = await fetch(url, { credentials: "omit" });
-  if (!response.ok) throw new Error(`Image download failed (${response.status})`);
-  return toBase64(await response.arrayBuffer());
-}
-
-async function getProductImagesByOpeningTab(productUrl) {
+async function getProductImageUrlsByOpeningTab(productUrl) {
   let tab = null;
   try {
-    console.log("[Meesho Extractor] Opening product tab:", productUrl);
     tab = await chrome.tabs.create({ url: productUrl, active: false });
     await waitForTabComplete(tab.id);
-    await new Promise((resolve) => setTimeout(resolve, HYDRATION_WAIT_MS));
+    await sleep(HYDRATION_WAIT_MS);
 
     const result = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -57,7 +86,6 @@ async function getProductImagesByOpeningTab(productUrl) {
         const normalise = (rawUrl) => {
           try {
             const url = new URL(rawUrl);
-            // Detail pages request 64px thumbnails. Request a useful OCR size instead.
             url.pathname = url.pathname.replace(/_\d+(?=\.[a-z0-9]+$)/i, "_512");
             url.searchParams.set("width", "512");
             return url.href;
@@ -70,75 +98,146 @@ async function getProductImagesByOpeningTab(productUrl) {
           .map((image) => {
             const src = image.currentSrc || image.src || "";
             const box = image.getBoundingClientRect();
-            const inInitialGallery = box.top < window.innerHeight + 350;
-            const visible = box.width > 0 && box.height > 0;
             return {
               src: normalise(src),
               score:
-                (inInitialGallery ? 2_000_000 : 0) +
+                (box.top < window.innerHeight + 350 ? 2_000_000 : 0) +
                 (box.width >= 250 ? 1_000_000 : 0) +
-                (visible ? 100_000 : 0) +
-                Math.min(image.naturalWidth * image.naturalHeight, 1_000_000) +
-                Math.min(Math.round(box.width * box.height), 500_000) -
+                (box.width > 0 && box.height > 0 ? 100_000 : 0) +
+                Math.min(image.naturalWidth * image.naturalHeight, 1_000_000) -
                 Math.max(0, Math.round(box.top)),
             };
           })
-          // Exclude marketing banners, recommendation cards, and non-product CDN assets.
           .filter((item) => isProductImage(item.src))
           .sort((left, right) => right.score - left.score);
 
-        const uniqueUrls = [];
-        for (const item of candidates) {
-          if (!uniqueUrls.includes(item.src)) uniqueUrls.push(item.src);
-          if (uniqueUrls.length === 3) break;
+        const imageUrls = [];
+        for (const candidate of candidates) {
+          if (!imageUrls.includes(candidate.src)) imageUrls.push(candidate.src);
+          if (imageUrls.length === 3) break;
         }
-
         const ogImage = document.querySelector('meta[property="og:image"], meta[name="og:image"]')?.content;
         if (isProductImage(ogImage)) {
           const url = normalise(ogImage);
-          if (!uniqueUrls.includes(url)) uniqueUrls.unshift(url);
+          if (!imageUrls.includes(url)) imageUrls.unshift(url);
         }
-
-        return uniqueUrls.slice(0, 3);
+        return imageUrls.slice(0, 3);
       },
     });
-
-    const imageUrls = result?.[0]?.result || [];
-    const images = [];
-    for (const imageUrl of imageUrls.slice(0, MAX_GALLERY_IMAGES)) {
-      try {
-        images.push({ url: imageUrl, image: await fetchImageAsBase64(imageUrl) });
-      } catch (error) {
-        console.warn("[Meesho Extractor] Could not fetch gallery image:", error.message);
-      }
-    }
-    return images;
+    return result?.[0]?.result || [];
   } catch (error) {
-    console.error("[Meesho Extractor] Product image extraction failed:", error.message);
+    console.error("[Meesho Extractor] Product image lookup failed:", error.message);
     return [];
   } finally {
     if (tab?.id) {
-      try {
-        await chrome.tabs.remove(tab.id);
-      } catch (_) {
-        // The tab may already have been closed by the browser.
-      }
+      try { await chrome.tabs.remove(tab.id); } catch (_) {}
     }
   }
 }
 
+async function getCodeFromGoogleLens(imageUrls) {
+  for (const imageUrl of imageUrls.slice(0, MAX_GALLERY_IMAGES)) {
+    let tab = null;
+    try {
+      // Lens should see only the lower-left supplier-code watermark, not the
+      // product, title artwork, or any text elsewhere in the gallery image.
+      const watermark = await cropWatermarkForLens(imageUrl);
+      tab = await chrome.tabs.create({ url: "https://lens.google.com/", active: false });
+      await waitForTabComplete(tab.id);
+
+      // Lens' documented web flow supports uploading an image. Create the same
+      // multipart form in its page so the cropped PNG, rather than the whole
+      // product image, becomes the Lens input.
+      const uploadComplete = waitForTabComplete(tab.id);
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        args: [watermark.imageBase64, watermark.width, watermark.height],
+        func: (imageBase64, width, height) => {
+          const binary = atob(imageBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+
+          const form = document.createElement("form");
+          form.action = `https://lens.google.com/upload?ep=gisbubb&st=${Date.now()}`;
+          form.method = "post";
+          form.enctype = "multipart/form-data";
+
+          const fileInput = document.createElement("input");
+          fileInput.type = "file";
+          fileInput.name = "encoded_image";
+          const transfer = new DataTransfer();
+          transfer.items.add(new File([new Blob([bytes], { type: "image/png" })], "meesho-supplier-code.png", { type: "image/png" }));
+          fileInput.files = transfer.files;
+
+          const dimensions = document.createElement("input");
+          dimensions.type = "hidden";
+          dimensions.name = "processed_image_dimensions";
+          dimensions.value = `${width},${height}`;
+
+          form.append(fileInput, dimensions);
+          document.body.append(form);
+          form.submit();
+        },
+      });
+      await uploadComplete;
+      await sleep(LENS_WAIT_MS);
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: async () => {
+          const sleepInPage = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const findCode = (text) => {
+            const match = String(text || "").match(/(?:^|[^a-z0-9])s\s*[-_–—]?\s*(\d{6,12})(?=$|[^a-z0-9])/i);
+            return match ? `s-${match[1]}` : null;
+          };
+          const pageText = () => document.body?.innerText || "";
+          if (/captcha|unusual traffic|not a robot/i.test(pageText())) {
+            return { code: null, error: "Google Lens requested a CAPTCHA" };
+          }
+
+          // Lens exposes optical text only after this control is selected.
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            const target = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
+              .find((element) => element.textContent?.trim().toLowerCase() === "select text");
+            if (target) {
+              (target.closest('button, [role="button"], a') || target).click();
+              break;
+            }
+            await sleepInPage(500);
+          }
+          await sleepInPage(1400);
+          const text = pageText();
+          return { code: findCode(text), error: null };
+        },
+      });
+      const response = result?.[0]?.result;
+      if (response?.code) return { code: response.code, error: null };
+      if (response?.error) return response;
+    } catch (error) {
+      console.warn("[Meesho Extractor] Google Lens request failed:", error.message);
+    } finally {
+      if (tab?.id) {
+        try { await chrome.tabs.remove(tab.id); } catch (_) {}
+      }
+    }
+  }
+  return { code: null, error: null };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "GET_PRODUCT_IMAGES") {
-    getProductImagesByOpeningTab(message.productUrl).then(sendResponse).catch(() => sendResponse([]));
+  if (message.action === "GET_PRODUCT_IMAGE_URLS") {
+    getProductImageUrlsByOpeningTab(message.productUrl).then(sendResponse).catch(() => sendResponse([]));
     return true;
   }
-
+  if (message.action === "GET_CODE_FROM_GOOGLE_LENS") {
+    getCodeFromGoogleLens(message.imageUrls || []).then(sendResponse).catch(() => sendResponse({ code: null }));
+    return true;
+  }
   if (message.action === "START_EXTRACTION_REQUEST" || message.action === "STOP_EXTRACTION_REQUEST") {
     const action = message.action === "START_EXTRACTION_REQUEST" ? "START_EXTRACTION" : "STOP_EXTRACTION";
     chrome.tabs.sendMessage(message.tabId, { action }).then(sendResponse).catch(() => sendResponse(null));
     return true;
   }
-
   if (["EXTRACTION_PROGRESS", "EXTRACTION_COMPLETE", "EXTRACTION_STOPPED"].includes(message.action)) {
     chrome.storage.local.set({
       extractionState: {
@@ -152,7 +251,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       },
     });
   }
-
   if (message.action === "GET_STATE") {
     chrome.storage.local.get(["extractionState"], (result) => sendResponse(result.extractionState || null));
     return true;
