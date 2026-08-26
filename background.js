@@ -186,16 +186,30 @@ async function getCodeFromGoogleLens(imageUrls) {
         target: { tabId: tab.id },
         func: async () => {
           const sleepInPage = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
           const findCode = (text) => {
-            const match = String(text || "").match(/(?:^|[^a-z0-9])s\s*[-_–—]?\s*(\d{6,12})(?=$|[^a-z0-9])/i);
-            return match ? `s-${match[1]}` : null;
+            if (!text) return null;
+            // 1) Direct s-code pattern: s- followed by digits/dots/dashes (e.g. s-170211462 or s-1.7021.1.462)
+            const sMatch = String(text).match(/(?:^|[^a-z0-9])s\s*[-_–—\.]?\s*([\d\.\-_–—]{5,15})(?=$|[^a-z0-9])/i);
+            if (sMatch) {
+              const digitsOnly = sMatch[1].replace(/\D/g, "");
+              if (digitsOnly.length >= 5) return `s-${digitsOnly}`;
+            }
+
+            // 2) Code displayed as dot-separated digits (e.g. 1.7021.1.462 in Lens header)
+            const digitsOnly = String(text).replace(/\D/g, "");
+            if (digitsOnly.length >= 6 && digitsOnly.length <= 12) {
+              return `s-${digitsOnly}`;
+            }
+            return null;
           };
+
           const pageText = () => document.body?.innerText || "";
           if (/captcha|unusual traffic|not a robot/i.test(pageText())) {
-            return { code: null, error: "Google Lens requested a CAPTCHA" };
+            return { code: null, extractedText: null, error: "Google Lens requested a CAPTCHA" };
           }
 
-          // Lens exposes optical text inside the image only after "Select text" is activated.
+          // Step 1: Click "Select text" button if present
           for (let attempt = 0; attempt < 8; attempt += 1) {
             const target = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
               .find((element) => element.textContent?.trim().toLowerCase() === "select text");
@@ -203,60 +217,65 @@ async function getCodeFromGoogleLens(imageUrls) {
               (target.closest('button, [role="button"], a') || target).click();
               break;
             }
-            await sleepInPage(500);
+            await sleepInPage(400);
           }
           await sleepInPage(800);
 
-          // Try clicking "Select all text" if available to highlight all image text
+          // Step 2: Click "Select all" / "Select all text" if floating popup appears
           const selectAllBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
-            .find((element) => /select all text/i.test(element.textContent?.trim() || ""));
+            .find((element) => /^(select all|select all text)$/i.test(element.textContent?.trim() || ""));
           if (selectAllBtn) {
             (selectAllBtn.closest('button, [role="button"], a') || selectAllBtn).click();
-            await sleepInPage(600);
+            await sleepInPage(500);
           }
 
-          // Extract text detected specifically inside the image
-          const getImageText = () => {
-            // 1. Current text selection in Lens image pane
-            const sel = window.getSelection()?.toString()?.trim();
-            if (sel && sel.length > 0 && !/select text|copy text|translate|search/i.test(sel)) {
-              return sel;
-            }
-
-            // 2. Specific Lens OCR text overlay elements
-            const ocrEls = Array.from(
-              document.querySelectorAll('[data-text], [data-string], .gws-lens-panes__text-region, [role="region"] span, .c2miie, .V4v0ee, .y24T4d')
-            );
-            if (ocrEls.length > 0) {
-              const texts = ocrEls
-                .map((el) => (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim())
-                .filter((t) => t.length > 0 && !/select text|copy text|translate|search|feedback/i.test(t));
-              if (texts.length > 0) {
-                return Array.from(new Set(texts)).join(" ");
+          // Step 3: Extract text ONLY from the image overlay & header card
+          const getImageTextOnly = () => {
+            // Source A: Lens top header query field next to thumbnail (e.g. "1.7021.1.462")
+            const headerInputs = Array.from(document.querySelectorAll('input[value], textarea[value], [role="combobox"] input'));
+            for (const input of headerInputs) {
+              const val = (input.value || "").trim();
+              if (val && !/search|lens|http/i.test(val) && /\d{5,}/.test(val)) {
+                return val;
               }
             }
 
-            // 3. Fallback: filter page innerText to strip Google UI noise
-            const raw = document.body?.innerText || "";
-            const noiseWords = [
-              "google", "lens", "search", "select text", "copy text", "listen", "translate",
-              "feedback", "share", "send to computer", "select all text", "visual matches",
-              "exact matches", "ai overview", "add to your search", "show original",
-              "about this page", "edit visual search", "privacy", "terms"
-            ];
-            const lines = raw
-              .split("\n")
-              .map((l) => l.trim())
-              .filter((line) => {
-                if (!line || line.length < 1) return false;
-                const lower = line.toLowerCase();
-                return !noiseWords.some((w) => lower === w || lower.startsWith(w + " ") || lower.endsWith(" " + w));
+            // Source B: Active window text selection inside Lens image region
+            const selText = window.getSelection()?.toString()?.trim();
+            if (selText && selText.length > 0 && !/select text|copy|listen|search|visual matches/i.test(selText)) {
+              return selText;
+            }
+
+            // Source C: Image card text elements (STRICTLY excluding AI Overview & Visual Matches)
+            const cardRegion = document.querySelector('[role="dialog"], [role="region"], .gws-lens-panes__image-pane') || document.body;
+            const candidateElements = Array.from(
+              cardRegion.querySelectorAll('[data-text], [data-string], span, div')
+            ).filter((el) => {
+              if (el.closest('[aria-label*="AI Overview"i], [aria-label*="Visual matches"i], #rso, .g, [data-attr*="ai"]')) {
+                return false;
+              }
+              return true;
+            });
+
+            const extractedWords = candidateElements
+              .map((el) => (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim())
+              .filter((t) => {
+                if (!t || t.length < 2) return false;
+                if (/select text|copy|listen|select all|search|visual matches|ask anything|sign in|ai overview|exact matches/i.test(t)) return false;
+                return true;
               });
-            return lines.join(" ").trim() || null;
+
+            if (extractedWords.length > 0) {
+              const codeLine = extractedWords.find((w) => /\d{5,}/.test(w));
+              if (codeLine) return codeLine;
+              return Array.from(new Set(extractedWords)).join(" ");
+            }
+
+            return null;
           };
 
-          const imageText = getImageText();
-          const isolatedCode = findCode(imageText || pageText());
+          const imageText = getImageTextOnly();
+          const isolatedCode = findCode(imageText);
 
           return {
             code: isolatedCode,
