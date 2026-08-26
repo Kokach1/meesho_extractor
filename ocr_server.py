@@ -1,125 +1,149 @@
-import os
+"""Local OCR endpoint for supplier codes printed on Meesho product images."""
+
+import base64
 import io
 import re
-import base64
+
 import requests
-from PIL import Image
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
+from PIL import Image, ImageOps
 from rapidocr_onnxruntime import RapidOCR
 
 app = Flask(__name__)
 CORS(app)
-
-print("==================================================")
-print("Meesho Local OCR Server v5.4.0 (RapidOCR Neural Engine)")
-print("==================================================")
-
-# Initialize RapidOCR engine once
 ocr_engine = RapidOCR()
 
-def extract_s_code(text_list):
-    """
-    Search extracted text lines for Meesho product code patterns:
-    e.g. 'S-537307277', 's-12345678', 's - 98765432'
-    """
-    for text in text_list:
-        if not text:
+# Do not inherit a system proxy configuration for legacy image_url requests.
+# The extension normally posts image bytes, so its authenticated browser fetch is
+# used instead of a second network request from this local process.
+image_session = requests.Session()
+image_session.trust_env = False
+
+
+def extract_s_code(texts):
+    """Return a normalized s-<digits> code from OCR text, if present."""
+    candidates = [str(text) for text in texts if text]
+    # OCR can split a code over neighbouring text boxes, so test their joined form too.
+    candidates.append(" ".join(candidates))
+    pattern = re.compile(
+        r"(?:^|[^a-z0-9])(?:s|5|\$)\s*[-_–—]?\s*((?:[0-9oOil]\s*){6,12})(?=$|[^a-z0-9])",
+        re.IGNORECASE,
+    )
+    for candidate in candidates:
+        match = pattern.search(candidate)
+        if not match:
             continue
-        cleaned = text.strip()
-        # Direct pattern: s- followed by 6-12 digits
-        m = re.search(r'\b[sS]-?(\d{6,12})\b', cleaned)
-        if m:
-            return f"s-{m.group(1)}"
-
-        # Resilient pattern: handle potential OCR confusion on 'S' or missing dash
-        m_flex = re.search(r'(?:^|\s|[^\w])([sS5$])\s*[-_–—]?\s*(\d{6,12})(?:$|\s|[^\w])', cleaned)
-        if m_flex:
-            return f"s-{m_flex.group(2)}"
-
+        digits = re.sub(r"\s+", "", match.group(1)).translate(str.maketrans({"o": "0", "O": "0", "i": "1", "I": "1", "l": "1"}))
+        if digits.isdigit() and 6 <= len(digits) <= 12:
+            return f"s-{digits}"
     return None
 
-def process_image_bytes(img_bytes):
-    # Pass 1: Run OCR on the full provided image bytes
-    result, _ = ocr_engine(img_bytes)
-    texts = [item[1] for item in (result or [])]
-    code = extract_s_code(texts)
-    if code:
-        return code, texts
 
-    # Pass 2: Crop bottom 25% (where Meesho watermarks are located) and retry
+def image_to_png(image):
+    """Convert AVIF/WebP/JPEG consistently and enlarge small text for RapidOCR."""
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    if image.width < 1200:
+        scale = min(3, max(2, 1200 // max(image.width, 1) + 1))
+        image = image.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue(), image
+
+
+def ocr_texts(image_bytes):
+    result, _ = ocr_engine(image_bytes)
+    return [item[1] for item in (result or []) if len(item) > 1 and item[1]]
+
+
+def process_image_bytes(image_bytes):
+    """OCR the full image and focused lower areas, returning (code, detected_text)."""
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        w, h = img.size
-        crop_h = min(350, max(100, int(h * 0.25)))
-        cropped = img.crop((0, h - crop_h, w, h))
-        buf = io.BytesIO()
-        cropped.save(buf, format="PNG")
-        cropped_bytes = buf.getvalue()
-        
-        result_crop, _ = ocr_engine(cropped_bytes)
-        texts_crop = [item[1] for item in (result_crop or [])]
-        code_crop = extract_s_code(texts_crop)
-        if code_crop:
-            return code_crop, texts_crop
-    except Exception as e:
-        print(f"[OCR] Crop retry error: {e}")
+        image = Image.open(io.BytesIO(image_bytes))
+        normalized_bytes, normalized_image = image_to_png(image)
+    except Exception as error:
+        raise ValueError(f"Unsupported or invalid image: {error}") from error
 
-    return None, texts
+    all_texts = []
+    regions = [normalized_bytes]
+    width, height = normalized_image.size
+    # Codes are normally near the lower edge. Use two bands to avoid losing a
+    # watermark that sits just above the old 25% crop boundary.
+    for top_ratio in (0.55, 0.72):
+        crop = normalized_image.crop((0, int(height * top_ratio), width, height))
+        buffer = io.BytesIO()
+        crop.save(buffer, format="PNG", optimize=True)
+        regions.append(buffer.getvalue())
 
-@app.route('/health', methods=['GET'])
+    for region in regions:
+        texts = ocr_texts(region)
+        all_texts.extend(texts)
+        code = extract_s_code(texts)
+        if code:
+            return code, all_texts
+    return None, all_texts
+
+
+def decode_base64_image(value):
+    if not isinstance(value, str) or not value:
+        return None
+    if "," in value:
+        value = value.split(",", 1)[1]
+    try:
+        return base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"Invalid base64 image: {error}") from error
+
+
+def download_image(url):
+    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+        raise ValueError("Invalid image URL")
+    response = image_session.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+@app.get("/health")
 def health():
-    return jsonify({
-        "status": "ok",
-        "version": "5.4.0",
-        "engine": "RapidOCR Neural Engine"
-    }), 200
+    return jsonify({"status": "ok", "version": "5.5.0", "engine": "RapidOCR"})
 
-@app.route('/ocr', methods=['POST'])
+
+@app.post("/ocr")
 def run_ocr():
     try:
-        data = request.get_json(force=True, silent=True)
-        if not data:
-            return jsonify({"code": None, "error": "Invalid JSON body"}), 400
+        data = request.get_json(force=True, silent=True) or {}
+        # Current extension protocol: image bytes already fetched by Chrome.
+        encoded_images = data.get("images") or ([] if not data.get("image") else [data["image"]])
+        image_bytes_list = [decode_base64_image(value) for value in encoded_images]
+        image_bytes_list = [value for value in image_bytes_list if value]
 
-        img_bytes = None
+        # Backward-compatible protocol for callers still sending image URLs.
+        if not image_bytes_list:
+            urls = data.get("image_urls") or ([] if not data.get("image_url") else [data["image_url"]])
+            image_bytes_list = [download_image(url) for url in urls[:3]]
 
-        # Base64 payload
-        if 'image' in data and data['image']:
-            try:
-                img_data = data['image']
-                if ',' in img_data:
-                    img_data = img_data.split(',', 1)[1]
-                img_bytes = base64.b64decode(img_data)
-            except Exception as e:
-                print(f"[OCR] Base64 decode error: {e}")
-
-        # Image URL payload
-        elif 'image_url' in data and data['image_url']:
-            url = data['image_url']
-            print(f"[OCR] Downloading: {url}")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "image/*,*/*;q=0.8"
-            }
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                img_bytes = resp.content
-            else:
-                print(f"[OCR] Download failed HTTP {resp.status_code}")
-                return jsonify({"code": None}), 200
-
-        if not img_bytes:
+        if not image_bytes_list:
             return jsonify({"code": None, "error": "No valid image payload"}), 400
 
-        code, detected_texts = process_image_bytes(img_bytes)
-        print(f"[OCR] Extracted: {code!r} (detected texts: {detected_texts})")
-        return jsonify({"code": code}), 200
+        detected_texts = []
+        for image_bytes in image_bytes_list[:3]:
+            code, texts = process_image_bytes(image_bytes)
+            detected_texts.extend(texts)
+            if code:
+                print(f"[OCR] Extracted {code!r}")
+                return jsonify({"code": code}), 200
 
-    except Exception as e:
-        print(f"[OCR] Error: {e}")
-        return jsonify({"code": None, "error": str(e)}), 200
+        print(f"[OCR] No supplier code found (detected: {detected_texts})")
+        return jsonify({"code": None}), 200
+    except Exception as error:
+        print(f"[OCR] Error: {error}")
+        return jsonify({"code": None, "error": str(error)}), 200
 
-if __name__ == '__main__':
-    print("Starting Meesho Local OCR Server v5.4.0 on http://127.0.0.1:5000 ...")
-    app.run(host='127.0.0.1', port=5000, debug=False)
+
+if __name__ == "__main__":
+    print("Meesho Local OCR Server v5.5.0 listening on http://127.0.0.1:5000")
+    app.run(host="127.0.0.1", port=5000, debug=False)

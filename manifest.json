@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "5.4.0",
-  "description": "Opens rated product pages, extracts live image URL, and processes via local high-speed neural OCR server for s-code extraction.",
+  "version": "5.5.0",
+  "description": "Extracts rated product-gallery image bytes and processes them locally with RapidOCR for supplier-code extraction.",
   "permissions": [
     "activeTab",
     "tabs",

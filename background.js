@@ -1,164 +1,169 @@
-// Background Service Worker v5.3.0
-// Handles opening product tabs and extracting image URLs from live DOM.
-// OCR is now handled by content.js → local ocr_server.py (Google Lens via Selenium)
+// Background service worker: retrieve real product-gallery images for local OCR.
 
-const TAB_TIMEOUT_MS = 15000;
+const TAB_TIMEOUT_MS = 25000;
+const HYDRATION_WAIT_MS = 1500;
+const MAX_GALLERY_IMAGES = 3;
 
-// ── Tab Image Extraction ────────────────────────────────────────────────────────
-async function getProductImageUrlByOpeningTab(productUrl) {
+function waitForTabComplete(tabId) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(listener);
+      callback(value);
+    };
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") finish(resolve);
+    };
+    const timeoutId = setTimeout(
+      () => finish(reject, new Error(`Tab load timeout after ${TAB_TIMEOUT_MS}ms`)),
+      TAB_TIMEOUT_MS,
+    );
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+function toBase64(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function fetchImageAsBase64(url) {
+  const response = await fetch(url, { credentials: "omit" });
+  if (!response.ok) throw new Error(`Image download failed (${response.status})`);
+  return toBase64(await response.arrayBuffer());
+}
+
+async function getProductImagesByOpeningTab(productUrl) {
   let tab = null;
-  let timeoutId = null;
-
   try {
-    console.log(`[BG v5.3.0] Opening product tab: ${productUrl}`);
+    console.log("[Meesho Extractor] Opening product tab:", productUrl);
     tab = await chrome.tabs.create({ url: productUrl, active: false });
+    await waitForTabComplete(tab.id);
+    await new Promise((resolve) => setTimeout(resolve, HYDRATION_WAIT_MS));
 
-    await new Promise((resolve, reject) => {
-      timeoutId = setTimeout(() => {
-        reject(new Error(`Tab load timeout after ${TAB_TIMEOUT_MS}ms`));
-      }, TAB_TIMEOUT_MS);
-
-      const listener = (tabId, changeInfo) => {
-        if (tabId === tab.id && changeInfo.status === "complete") {
-          chrome.tabs.onUpdated.removeListener(listener);
-          clearTimeout(timeoutId);
-          resolve();
-        }
-      };
-      chrome.tabs.onUpdated.addListener(listener);
-    });
-
-    // Extra wait for React/Next.js hydration and image rendering
-    await new Promise((r) => setTimeout(r, 2000));
-
-    const results = await chrome.scripting.executeScript({
+    const result = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
-        // Priority 1: largest rendered Meesho CDN image
-        const allImgs = Array.from(
-          document.querySelectorAll('img[src*="images.meesho.com"]')
-        );
-        const scored = allImgs
-          .map((img) => {
-            const src = img.src || "";
-            let score = 0;
-            if (src.includes("/images/products/")) score += 100;
-            score += (img.naturalWidth || 0) + (img.naturalHeight || 0);
-            return { src, score };
-          })
-          .filter((x) => x.src && x.score > 100)
-          .sort((a, b) => b.score - a.score);
-
-        if (scored.length > 0) return scored[0].src;
-
-        // Priority 2: __NEXT_DATA__ embedded JSON
-        const nextEl = document.getElementById("__NEXT_DATA__");
-        if (nextEl) {
-          const matches = nextEl.textContent.match(
-            /https:\/\/images\.meesho\.com\/images\/products\/[^\s"'\\]+/g
-          );
-          if (matches && matches.length > 0) {
-            return matches
-              .filter((u) => !u.includes("_128") && !u.includes("_80"))
-              .concat(matches)[0];
+        const isProductImage = (url) =>
+          /https:\/\/images\.meesho\.com\/images\/products\//i.test(url || "");
+        const normalise = (rawUrl) => {
+          try {
+            const url = new URL(rawUrl);
+            // Detail pages request 64px thumbnails. Request a useful OCR size instead.
+            url.pathname = url.pathname.replace(/_\d+(?=\.[a-z0-9]+$)/i, "_512");
+            url.searchParams.set("width", "512");
+            return url.href;
+          } catch (_) {
+            return rawUrl;
           }
+        };
+
+        const candidates = Array.from(document.images)
+          .map((image) => {
+            const src = image.currentSrc || image.src || "";
+            const box = image.getBoundingClientRect();
+            const inInitialGallery = box.top < window.innerHeight + 350;
+            const visible = box.width > 0 && box.height > 0;
+            return {
+              src: normalise(src),
+              score:
+                (inInitialGallery ? 2_000_000 : 0) +
+                (box.width >= 250 ? 1_000_000 : 0) +
+                (visible ? 100_000 : 0) +
+                Math.min(image.naturalWidth * image.naturalHeight, 1_000_000) +
+                Math.min(Math.round(box.width * box.height), 500_000) -
+                Math.max(0, Math.round(box.top)),
+            };
+          })
+          // Exclude marketing banners, recommendation cards, and non-product CDN assets.
+          .filter((item) => isProductImage(item.src))
+          .sort((left, right) => right.score - left.score);
+
+        const uniqueUrls = [];
+        for (const item of candidates) {
+          if (!uniqueUrls.includes(item.src)) uniqueUrls.push(item.src);
+          if (uniqueUrls.length === 3) break;
         }
 
-        // Priority 3: og:image meta tag
-        const og = document.querySelector(
-          'meta[property="og:image"], meta[name="og:image"]'
-        );
-        if (og && og.content && og.content.includes("meesho.com")) {
-          return og.content;
+        const ogImage = document.querySelector('meta[property="og:image"], meta[name="og:image"]')?.content;
+        if (isProductImage(ogImage)) {
+          const url = normalise(ogImage);
+          if (!uniqueUrls.includes(url)) uniqueUrls.unshift(url);
         }
 
-        return null;
+        return uniqueUrls.slice(0, 3);
       },
     });
 
-    const imageUrl = results?.[0]?.result;
-    console.log(`[BG v5.3.0] Image URL: ${imageUrl}`);
-    return imageUrl || null;
-
-  } catch (err) {
-    console.error(`[BG v5.3.0] Tab extraction error: ${err.message}`);
-    return null;
-  } finally {
-    if (tab && tab.id) {
-      try { await chrome.tabs.remove(tab.id); } catch (_) {}
+    const imageUrls = result?.[0]?.result || [];
+    const images = [];
+    for (const imageUrl of imageUrls.slice(0, MAX_GALLERY_IMAGES)) {
+      try {
+        images.push({ url: imageUrl, image: await fetchImageAsBase64(imageUrl) });
+      } catch (error) {
+        console.warn("[Meesho Extractor] Could not fetch gallery image:", error.message);
+      }
     }
-    if (timeoutId) clearTimeout(timeoutId);
+    return images;
+  } catch (error) {
+    console.error("[Meesho Extractor] Product image extraction failed:", error.message);
+    return [];
+  } finally {
+    if (tab?.id) {
+      try {
+        await chrome.tabs.remove(tab.id);
+      } catch (_) {
+        // The tab may already have been closed by the browser.
+      }
+    }
   }
 }
 
-// ── Message Listener ────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "GET_PRODUCT_IMAGE_URL") {
-    getProductImageUrlByOpeningTab(message.productUrl)
-      .then((url) => sendResponse(url))
-      .catch(() => sendResponse(null));
+  if (message.action === "GET_PRODUCT_IMAGES") {
+    getProductImagesByOpeningTab(message.productUrl).then(sendResponse).catch(() => sendResponse([]));
     return true;
   }
 
-  if (
-    message.action === "START_EXTRACTION_REQUEST" ||
-    message.action === "STOP_EXTRACTION_REQUEST"
-  ) {
-    const contentAction =
-      message.action === "START_EXTRACTION_REQUEST"
-        ? "START_EXTRACTION"
-        : "STOP_EXTRACTION";
-    chrome.tabs
-      .sendMessage(message.tabId, { action: contentAction })
-      .then((response) => sendResponse(response))
-      .catch(() => sendResponse(null));
+  if (message.action === "START_EXTRACTION_REQUEST" || message.action === "STOP_EXTRACTION_REQUEST") {
+    const action = message.action === "START_EXTRACTION_REQUEST" ? "START_EXTRACTION" : "STOP_EXTRACTION";
+    chrome.tabs.sendMessage(message.tabId, { action }).then(sendResponse).catch(() => sendResponse(null));
     return true;
   }
 
-  if (
-    message.action === "EXTRACTION_PROGRESS" ||
-    message.action === "EXTRACTION_COMPLETE" ||
-    message.action === "EXTRACTION_STOPPED"
-  ) {
-    const isExtracting = message.action === "EXTRACTION_PROGRESS";
+  if (["EXTRACTION_PROGRESS", "EXTRACTION_COMPLETE", "EXTRACTION_STOPPED"].includes(message.action)) {
     chrome.storage.local.set({
       extractionState: {
-        isExtracting,
-        progressMessage:
-          message.action === "EXTRACTION_COMPLETE"
-            ? "Completed"
-            : message.action === "EXTRACTION_STOPPED"
-            ? "Stopped"
-            : message.progressMessage,
+        isExtracting: message.action === "EXTRACTION_PROGRESS",
+        progressMessage: message.action === "EXTRACTION_COMPLETE" ? "Completed" : message.action === "EXTRACTION_STOPPED" ? "Stopped" : message.progressMessage,
         scannedCount: message.scannedCount || 0,
         totalMatching: (message.products || []).length,
         products: message.products || [],
-        tabId: sender.tab ? sender.tab.id : null,
+        tabId: sender.tab?.id || null,
         error: null,
       },
     });
   }
 
   if (message.action === "GET_STATE") {
-    chrome.storage.local.get(["extractionState"], (res) => {
-      sendResponse(res.extractionState || null);
-    });
+    chrome.storage.local.get(["extractionState"], (result) => sendResponse(result.extractionState || null));
     return true;
   }
 });
 
-// ── Auto-trigger extraction on search page load ─────────────────────────────────
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (
-    changeInfo.status === "complete" &&
-    tab.url &&
-    tab.url.includes("meesho.com/search")
-  ) {
-    chrome.storage.local.get(["autoStartExtraction"], (res) => {
-      if (res.autoStartExtraction) {
-        chrome.storage.local.set({ autoStartExtraction: false });
-        chrome.tabs.sendMessage(tabId, { action: "START_EXTRACTION" }).catch(() => {});
-      }
-    });
-  }
+  if (changeInfo.status !== "complete" || !tab.url?.includes("meesho.com/search")) return;
+  chrome.storage.local.get(["autoStartExtraction"], ({ autoStartExtraction }) => {
+    if (!autoStartExtraction) return;
+    chrome.storage.local.set({ autoStartExtraction: false });
+    chrome.tabs.sendMessage(tabId, { action: "START_EXTRACTION" }).catch(() => {});
+  });
 });
