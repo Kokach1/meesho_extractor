@@ -219,17 +219,59 @@ async function getCodeFromGoogleLens(imageUrls) {
             }
             await sleepInPage(400);
           }
-          await sleepInPage(800);
+          await sleepInPage(500);
 
-          // Step 2: Click "Select all" / "Select all text" if floating popup appears
-          const selectAllBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
-            .find((element) => /^(select all|select all text)$/i.test(element.textContent?.trim() || ""));
-          if (selectAllBtn) {
-            (selectAllBtn.closest('button, [role="button"], a') || selectAllBtn).click();
-            await sleepInPage(500);
+          // Step 2: Click directly on the code location in the image viewer
+          const ocrElements = Array.from(
+            document.querySelectorAll('[data-text], [data-string], .gws-lens-panes__text-region, [role="region"] span, .c2miie, .V4v0ee, .y24T4d')
+          );
+          const codeOverlayEl = ocrElements.find((el) => {
+            const txt = (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim();
+            return /\d{5,}/.test(txt);
+          });
+
+          if (codeOverlayEl) {
+            const rect = codeOverlayEl.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+            codeOverlayEl.dispatchEvent(new MouseEvent("mousedown", opts));
+            codeOverlayEl.dispatchEvent(new MouseEvent("mouseup", opts));
+            codeOverlayEl.click();
+          } else {
+            const imgEl = document.querySelector('img[src^="blob:"], canvas, .gws-lens-panes__image-pane img, [role="region"] img');
+            if (imgEl) {
+              const rect = imgEl.getBoundingClientRect();
+              const x = rect.left + rect.width * 0.35;
+              const y = rect.top + rect.height * 0.7;
+              const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+              imgEl.dispatchEvent(new MouseEvent("mousedown", opts));
+              imgEl.dispatchEvent(new MouseEvent("mouseup", opts));
+              imgEl.click();
+            }
+          }
+          await sleepInPage(500);
+
+          // Step 3: Click "Copy" / "Copy text" floating menu button
+          const copyBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
+            .find((element) => {
+              const text = element.textContent?.trim().toLowerCase() || element.getAttribute("aria-label")?.trim().toLowerCase() || "";
+              return text === "copy" || text === "copy text" || text === "copy selection";
+            });
+
+          if (copyBtn) {
+            (copyBtn.closest('button, [role="button"], a') || copyBtn).click();
+            await sleepInPage(400);
+          } else {
+            const selectAllBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
+              .find((element) => /^(select all|select all text)$/i.test(element.textContent?.trim() || ""));
+            if (selectAllBtn) {
+              (selectAllBtn.closest('button, [role="button"], a') || selectAllBtn).click();
+              await sleepInPage(400);
+            }
           }
 
-          // Step 3: Extract text ONLY from the image overlay & header card
+          // Step 4: Extract text ONLY from the image overlay & header card
           const getImageTextOnly = () => {
             // Source A: Lens top header query field next to thumbnail (e.g. "1.7021.1.462")
             const headerInputs = Array.from(document.querySelectorAll('input[value], textarea[value], [role="combobox"] input'));
