@@ -89,7 +89,11 @@
       const imageUrls = await getProductImageUrls(fullLink);
       if (!isExtracting) break;
 
-      productData.code = imageUrls.length ? await getCodeFromGoogleLens(imageUrls) : null;
+      const lensResult = imageUrls.length ? await getCodeFromGoogleLens(imageUrls) : { code: null, extractedText: null };
+      productData.isolated_code = lensResult.code || null;
+      productData.lens_text = lensResult.extractedText || null;
+      productData.code = lensResult.code || lensResult.extractedText || null;
+
       filteredProducts.push(productData);
       notifyProgress(`${filteredProducts.length} matched — latest code: ${productData.code || "not found"}`);
     }
@@ -134,10 +138,13 @@
       chrome.runtime.sendMessage({ action: "GET_CODE_FROM_GOOGLE_LENS", imageUrls }, (response) => {
         if (chrome.runtime.lastError) {
           console.error("[Meesho Extractor] Google Lens error:", chrome.runtime.lastError.message);
-          resolve(null);
+          resolve({ code: null, extractedText: null });
           return;
         }
-        resolve(typeof response?.code === "string" && response.code ? response.code : null);
+        resolve({
+          code: typeof response?.code === "string" && response.code ? response.code : null,
+          extractedText: typeof response?.extractedText === "string" && response.extractedText ? response.extractedText : null
+        });
       });
     });
   }
@@ -163,6 +170,8 @@
       type: "General",
       product_link: productLink,
       rating,
+      isolated_code: null,
+      lens_text: null,
       code: null,
     };
   }

@@ -102,14 +102,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!currentProducts || currentProducts.length === 0) { alert("No matching products to export."); return; }
     if (typeof XLSX === "undefined") { alert("SheetJS library failed to load."); return; }
     try {
-      const rows = currentProducts.map(p => ({
-        "Product Name": p.product_name || "N/A",
-        "Price": p.price || "N/A",
-        "Type": p.type || "General",
-        "Product Link": p.product_link || "",
-        "Rating / 5": p.rating !== null ? p.rating : "N/A",
-        "Code": p.code !== null && p.code !== undefined ? p.code : null
-      }));
+      const rows = currentProducts.map(p => {
+        const isolatedCode = p.isolated_code || (p.code && /^s-\d{6,12}$/i.test(p.code) ? p.code : null);
+        const codeVal = isolatedCode || p.code || p.lens_text || "N/A";
+        const fullTextVal = p.lens_text || p.code || "N/A";
+
+        return {
+          "Product Name": p.product_name || "N/A",
+          "Price": p.price || "N/A",
+          "Type": p.type || "General",
+          "Product Link": p.product_link || "",
+          "Rating / 5": p.rating !== null ? p.rating : "N/A",
+          "Code": codeVal,
+          "Lens Extracted Text": fullTextVal
+        };
+      });
 
       const ws = XLSX.utils.json_to_sheet(rows);
       const range = XLSX.utils.decode_range(ws["!ref"]);
@@ -117,7 +124,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const cell = XLSX.utils.encode_cell({ r: R, c: 3 });
         if (ws[cell]?.v) ws[cell].l = { Target: String(ws[cell].v) };
       }
-      ws["!cols"] = [{ wch: 35 }, { wch: 12 }, { wch: 18 }, { wch: 45 }, { wch: 12 }, { wch: 20 }];
+      ws["!cols"] = [{ wch: 35 }, { wch: 12 }, { wch: 18 }, { wch: 45 }, { wch: 12 }, { wch: 20 }, { wch: 40 }];
 
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Filtered Products");
@@ -157,13 +164,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     resultsTableBody.innerHTML = products.map(p => {
       const name = esc(p.product_name), price = esc(p.price), type = esc(p.type);
       const rating = p.rating !== null ? p.rating.toFixed(1) : "N/A";
-      const code = p.code ? `<span class="code-pill">${esc(p.code)}</span>` : `<span class="null-code">null</span>`;
+
+      const isolatedCode = p.isolated_code || (p.code && /^s-\d{6,12}$/i.test(p.code) ? p.code : null);
+      const displayText = isolatedCode || p.code || p.lens_text;
+
+      let codeHtml = `<span class="null-code">null</span>`;
+      if (isolatedCode) {
+        codeHtml = `<span class="code-pill" title="Isolated Supplier Code: ${esc(isolatedCode)}">${esc(isolatedCode)}</span>`;
+      } else if (displayText) {
+        codeHtml = `<span class="code-pill raw-text" title="Extracted Text: ${esc(p.lens_text || displayText)}">${esc(displayText)}</span>`;
+      }
+
       return `<tr>
         <td class="prod-name" title="${name}">${name}</td>
         <td class="prod-price">${price}</td>
         <td class="prod-type">${type}</td>
         <td><span class="rating-pill">${rating} ★</span></td>
-        <td>${code}</td>
+        <td>${codeHtml}</td>
         <td><a href="${p.product_link}" target="_blank" class="prod-link-btn" title="Open product page">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>

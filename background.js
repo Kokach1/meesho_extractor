@@ -206,12 +206,42 @@ async function getCodeFromGoogleLens(imageUrls) {
             await sleepInPage(500);
           }
           await sleepInPage(1400);
-          const text = pageText();
-          return { code: findCode(text), error: null };
+          const rawPageText = pageText();
+          const isolatedCode = findCode(rawPageText);
+
+          // Clean Lens UI noise to isolate optical text extracted from the image
+          const uiNoisePatterns = [
+            /^search$/i, /^select text$/i, /^copy text$/i, /^listen$/i, /^translate$/i,
+            /^feedback$/i, /^share$/i, /^send to computer$/i, /^select all text$/i,
+            /^visual matches$/i, /^exact matches$/i, /^ai overview$/i,
+            /^add to your search$/i, /^show original$/i, /^about this page$/i,
+            /^edit visual search$/i
+          ];
+
+          const textLines = rawPageText
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => {
+              if (!line || line.length < 2) return false;
+              for (const pat of uiNoisePatterns) {
+                if (pat.test(line)) return false;
+              }
+              return true;
+            });
+
+          const cleanLensText = textLines.join(" ").trim() || rawPageText.trim() || null;
+
+          return { code: isolatedCode, extractedText: cleanLensText, error: null };
         },
       });
       const response = result?.[0]?.result;
-      if (response?.code) return { code: response.code, error: null };
+      if (response?.code || response?.extractedText) {
+        return {
+          code: response.code || null,
+          extractedText: response.extractedText || null,
+          error: null,
+        };
+      }
       if (response?.error) return response;
     } catch (error) {
       console.warn("[Meesho Extractor] Google Lens request failed:", error.message);
@@ -221,7 +251,7 @@ async function getCodeFromGoogleLens(imageUrls) {
       }
     }
   }
-  return { code: null, error: null };
+  return { code: null, extractedText: null, error: null };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -230,7 +260,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.action === "GET_CODE_FROM_GOOGLE_LENS") {
-    getCodeFromGoogleLens(message.imageUrls || []).then(sendResponse).catch(() => sendResponse({ code: null }));
+    getCodeFromGoogleLens(message.imageUrls || []).then(sendResponse).catch(() => sendResponse({ code: null, extractedText: null }));
     return true;
   }
   if (message.action === "START_EXTRACTION_REQUEST" || message.action === "STOP_EXTRACTION_REQUEST") {
