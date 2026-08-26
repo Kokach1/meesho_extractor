@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "5.2.0",
-  "description": "Opens each rated product page in a real tab, extracts live image URL, crops bottom 80px, sends to Gemini Vision for s-code extraction. No server needed.",
+  "version": "5.4.0",
+  "description": "Opens rated product pages, extracts live image URL, and processes via local high-speed neural OCR server for s-code extraction.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -11,7 +11,7 @@
   ],
   "host_permissions": [
     "*://*.meesho.com/*",
-    "https://generativelanguage.googleapis.com/*"
+    "http://127.0.0.1:5000/*"
   ],
   "background": {
     "service_worker": "background.js"

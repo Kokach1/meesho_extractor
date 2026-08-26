@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Meesho Search & Rating Filter Extractor v5.1.0</title>
+  <title>Meesho Search & Rating Filter Extractor v5.4.0</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -18,7 +18,7 @@
         </div>
         <div class="brand-text">
           <h1 class="app-title">Meesho Extractor</h1>
-          <span class="app-subtitle">>4.0 Rating + Gemini Vision</span>
+          <span class="app-subtitle">&gt;4.0 Rating + Neural OCR</span>
         </div>
       </div>
       <span class="active-badge" id="active-badge">Active Tab</span>
@@ -27,25 +27,6 @@
     <!-- Main Content -->
     <main class="main-content">
 
-      <!-- Gemini API Key Section -->
-      <section id="api-key-section" class="section">
-        <div class="api-key-card" id="api-key-card">
-          <div class="api-key-header">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#f43397" stroke-width="2">
-              <circle cx="8" cy="8" r="5"></circle>
-              <path d="M20 20l-4.35-4.35"></path>
-              <line x1="11" y1="5" x2="13" y2="7"></line>
-            </svg>
-            <span class="api-key-label" id="api-key-label">Gemini API Key</span>
-            <button type="button" id="edit-key-btn" class="edit-key-btn" hidden>Edit</button>
-          </div>
-          <div id="api-key-input-row" class="api-key-input-row">
-            <input type="password" id="api-key-input" class="api-key-input" placeholder="Enter your Gemini API key..." autocomplete="off" />
-            <button type="button" id="save-key-btn" class="btn-save-key">Save</button>
-          </div>
-          <div id="api-key-status" class="api-key-status hidden"></div>
-        </div>
-      </section>
 
       <!-- Search Form View -->
       <section id="search-section" class="section">
@@ -151,7 +132,7 @@
             </thead>
             <tbody id="results-table-body">
               <tr class="empty-row">
-                <td colspan="6">No products with >4.0 rating yet. Save your Gemini API key above, then enter a product name to search.</td>
+                <td colspan="6">No products with &gt;4.0 rating yet. Enter a product name to search — codes extracted via Google Lens automatically.</td>
               </tr>
             </tbody>
           </table>
@@ -161,7 +142,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>Meesho Extractor v5.0.0 (Gemini Vision — No Server Required)</span>
+      <span>Meesho Extractor v5.4.0 (Neural OCR Engine — 100% Local & Fast)</span>
     </footer>
   </div>
 

@@ -1,7 +1,8 @@
-// Background Service Worker v5.2.0
-// Handles opening product tabs, extracting image URLs from live DOM, closing tabs
+// Background Service Worker v5.3.0
+// Handles opening product tabs and extracting image URLs from live DOM.
+// OCR is now handled by content.js → local ocr_server.py (Google Lens via Selenium)
 
-const TAB_TIMEOUT_MS = 15000; // Max time to wait for product page to load
+const TAB_TIMEOUT_MS = 15000;
 
 // ── Tab Image Extraction ────────────────────────────────────────────────────────
 async function getProductImageUrlByOpeningTab(productUrl) {
@@ -9,10 +10,9 @@ async function getProductImageUrlByOpeningTab(productUrl) {
   let timeoutId = null;
 
   try {
-    console.log(`[BG v5.2.0] Opening product tab: ${productUrl}`);
+    console.log(`[BG v5.3.0] Opening product tab: ${productUrl}`);
     tab = await chrome.tabs.create({ url: productUrl, active: false });
 
-    // Wait for page to fully load (or timeout)
     await new Promise((resolve, reject) => {
       timeoutId = setTimeout(() => {
         reject(new Error(`Tab load timeout after ${TAB_TIMEOUT_MS}ms`));
@@ -31,17 +31,13 @@ async function getProductImageUrlByOpeningTab(productUrl) {
     // Extra wait for React/Next.js hydration and image rendering
     await new Promise((r) => setTimeout(r, 2000));
 
-    // Inject script into the loaded product tab to extract the primary image URL
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
-        // Priority 1: Find the biggest rendered product image on page
-        // (the main image gallery on Meesho uses Meesho CDN URLs)
+        // Priority 1: largest rendered Meesho CDN image
         const allImgs = Array.from(
           document.querySelectorAll('img[src*="images.meesho.com"]')
         );
-
-        // Score images: prefer larger natural size, prefer /images/products/ path
         const scored = allImgs
           .map((img) => {
             const src = img.src || "";
@@ -55,22 +51,20 @@ async function getProductImageUrlByOpeningTab(productUrl) {
 
         if (scored.length > 0) return scored[0].src;
 
-        // Priority 2: Try __NEXT_DATA__ embedded JSON
+        // Priority 2: __NEXT_DATA__ embedded JSON
         const nextEl = document.getElementById("__NEXT_DATA__");
         if (nextEl) {
           const matches = nextEl.textContent.match(
             /https:\/\/images\.meesho\.com\/images\/products\/[^\s"'\\]+/g
           );
           if (matches && matches.length > 0) {
-            // Prefer higher res (no small suffix)
-            const best = matches
+            return matches
               .filter((u) => !u.includes("_128") && !u.includes("_80"))
               .concat(matches)[0];
-            return best;
           }
         }
 
-        // Priority 3: og:image meta
+        // Priority 3: og:image meta tag
         const og = document.querySelector(
           'meta[property="og:image"], meta[name="og:image"]'
         );
@@ -83,19 +77,15 @@ async function getProductImageUrlByOpeningTab(productUrl) {
     });
 
     const imageUrl = results?.[0]?.result;
-    console.log(`[BG v5.2.0] Extracted image URL from live DOM: ${imageUrl}`);
+    console.log(`[BG v5.3.0] Image URL: ${imageUrl}`);
     return imageUrl || null;
 
   } catch (err) {
-    console.error(`[BG v5.2.0] Tab extraction error: ${err.message}`);
+    console.error(`[BG v5.3.0] Tab extraction error: ${err.message}`);
     return null;
   } finally {
-    // Always close the product tab
     if (tab && tab.id) {
-      try {
-        await chrome.tabs.remove(tab.id);
-        console.log(`[BG v5.2.0] Closed product tab ${tab.id}`);
-      } catch (_) {}
+      try { await chrome.tabs.remove(tab.id); } catch (_) {}
     }
     if (timeoutId) clearTimeout(timeoutId);
   }
@@ -103,15 +93,13 @@ async function getProductImageUrlByOpeningTab(productUrl) {
 
 // ── Message Listener ────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // ── Open product page tab and return its primary image URL ──
   if (message.action === "GET_PRODUCT_IMAGE_URL") {
     getProductImageUrlByOpeningTab(message.productUrl)
       .then((url) => sendResponse(url))
       .catch(() => sendResponse(null));
-    return true; // Keep channel open for async response
+    return true;
   }
 
-  // ── Relay start/stop between popup and content script ──
   if (
     message.action === "START_EXTRACTION_REQUEST" ||
     message.action === "STOP_EXTRACTION_REQUEST"
@@ -127,7 +115,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // ── Forward extraction state updates to storage for popup polling ──
   if (
     message.action === "EXTRACTION_PROGRESS" ||
     message.action === "EXTRACTION_COMPLETE" ||

@@ -1,9 +1,10 @@
-// Content Script for Meesho Product Rating Filter & Extractor v5.2.0
+// Content Script for Meesho Product Rating Filter & Extractor v5.3.0
 // For each product with rating > 4.0:
 //   1. Asks background.js to OPEN A REAL PRODUCT TAB
 //   2. Background extracts live-rendered product image URL from DOM
-//   3. Content script fetches image, crops bottom 80px, sends to Gemini Vision
-//   4. Returns the s-code (e.g. s-452654917) for Excel export
+//   3. Content script fetches image, crops bottom strip, sends to local OCR server
+//   4. Local server uses Google Lens (Selenium) to extract the s-code
+//   5. Returns the s-code (e.g. s-452654917) for Excel export
 
 (function () {
   if (window.__meeshoExtractorInjected) return;
@@ -20,17 +21,6 @@
   const NO_NEW_PRODUCTS_LIMIT = 3;
   const SCROLL_WAIT_MS = 1500;
   const MIN_RATING_THRESHOLD = 4.0;
-  const GEMINI_API_URL =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-
-  // Prompt specifically tuned for Meesho bottom-of-image product codes
-  const GEMINI_PROMPT =
-    "This is the bottom strip of a Meesho product image. " +
-    "There is a product code printed at the bottom-left corner in small white or dark text, " +
-    "typically formatted like 's-452654917' (letter 's' followed by a dash and digits). " +
-    "Extract ONLY that code and return it exactly as printed. " +
-    "Do not explain. Do not add any other words. " +
-    "If you cannot see any such code, return the single word: null";
 
   // ── Auto-start ─────────────────────────────────────────────────────────────
   chrome.storage.local.get(["autoStartExtraction"], (res) => {
@@ -158,25 +148,13 @@
       const imageUrl = await getProductImageUrlViaTab(fullLink);
 
       if (!imageUrl) {
-        console.warn(`[v5.2.0] No image URL returned for: ${fullLink}`);
+        console.warn(`[v5.4.0] No image URL returned for: ${fullLink}`);
         productData.code = null;
       } else {
-        console.log(`[v5.2.0] Got image URL: ${imageUrl}`);
-        notifyProgress(`Fetching image & running Gemini OCR...`);
-
-        const b64 = await fetchImageBottomAsBase64(imageUrl);
-        if (!b64) {
-          console.warn(`[v5.2.0] Image fetch/crop failed for: ${imageUrl}`);
-          productData.code = null;
-        } else {
-          const apiKey = await getApiKey();
-          if (!apiKey) {
-            productData.code = null;
-          } else {
-            productData.code = await callGeminiVision(apiKey, b64);
-            console.log(`[v5.2.0] Code extracted: ${productData.code}`);
-          }
-        }
+        console.log(`[v5.4.0] Got image URL: ${imageUrl}`);
+        notifyProgress(`Running local OCR on product image...`);
+        productData.code = await callLocalOCRServer(imageUrl);
+        console.log(`[v5.4.0] OCR returned code: ${productData.code}`);
       }
 
       filteredProducts.push(productData);
@@ -193,7 +171,7 @@
         { action: "GET_PRODUCT_IMAGE_URL", productUrl },
         (response) => {
           if (chrome.runtime.lastError) {
-            console.error("[v5.2.0] Background message error:", chrome.runtime.lastError.message);
+            console.error("[v5.4.0] Background message error:", chrome.runtime.lastError.message);
             resolve(null);
           } else {
             resolve(response || null);
@@ -201,6 +179,27 @@
         }
       );
     });
+  }
+
+  // ── Call Local OCR Server (RapidOCR Neural Engine) ──────────────────────────
+  async function callLocalOCRServer(imageUrl) {
+    try {
+      const resp = await fetch("http://127.0.0.1:5000/ocr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_url: imageUrl })
+      });
+      if (!resp.ok) {
+        console.warn(`[v5.4.0] OCR server HTTP ${resp.status} — is the server running?`);
+        return null;
+      }
+      const data = await resp.json();
+      return data.code || null;
+    } catch (err) {
+      console.error(`[v5.4.0] OCR server error: ${err.message}`);
+      console.warn(`[v5.4.0] Make sure ocr_server.py is running: python ocr_server.py`);
+      return null;
+    }
   }
 
   // ── Fetch Image & Crop Bottom 80px as Base64 ────────────────────────────────
@@ -273,51 +272,7 @@
     }
   }
 
-  // ── Gemini Vision API ───────────────────────────────────────────────────────
-  async function callGeminiVision(apiKey, b64Image) {
-    try {
-      const url = `${GEMINI_API_URL}?key=${apiKey}`;
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: GEMINI_PROMPT },
-                {
-                  inline_data: {
-                    mime_type: "image/png",
-                    data: b64Image,
-                  },
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 50,
-          },
-        }),
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        console.warn(
-          `[v5.2.0] Gemini HTTP ${resp.status}: ${errText.slice(0, 200)}`
-        );
-        return null;
-      }
-
-      const data = await resp.json();
-      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return sanitize(raw);
-    } catch (err) {
-      console.error("[v5.2.0] Gemini error:", err.message);
-      return null;
-    }
-  }
-
+  // ── Sanitize Lens Text Output ────────────────────────────────────────────────
   function sanitize(text) {
     if (!text) return null;
     let s = text
@@ -362,10 +317,8 @@
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-  async function getApiKey() {
-    return new Promise((r) =>
-      chrome.storage.local.get(["geminiApiKey"], (res) => r(res.geminiApiKey))
-    );
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   function extractCardData(cardEl, fullLink) {
@@ -462,6 +415,6 @@
   }
 
   console.log(
-    "[Meesho Extractor v5.2.0] Loaded. Opens real product tabs via background.js for image extraction."
+    "[Meesho Extractor v5.3.0] Loaded. Uses Google Lens via background.js for image OCR."
   );
 })();

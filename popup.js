@@ -7,14 +7,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const errorMessage = document.getElementById("error-message");
   const openMeeshoBtn = document.getElementById("open-meesho-btn");
 
-  // API Key elements
-  const apiKeyInput = document.getElementById("api-key-input");
-  const saveKeyBtn = document.getElementById("save-key-btn");
-  const editKeyBtn = document.getElementById("edit-key-btn");
-  const apiKeyLabel = document.getElementById("api-key-label");
-  const apiKeyInputRow = document.getElementById("api-key-input-row");
-  const apiKeyStatus = document.getElementById("api-key-status");
-
   const startExtractBtn = document.getElementById("start-extract-btn");
   const stopExtractBtn = document.getElementById("stop-extract-btn");
   const statusDot = document.getElementById("status-dot");
@@ -54,45 +46,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     startExtractBtn.disabled = true;
   }
 
-  // ── API Key Management ──────────────────────────────────
-  const savedKey = await new Promise(r => chrome.storage.local.get(["geminiApiKey"], res => r(res.geminiApiKey)));
 
-  if (savedKey) {
-    showKeyConfigured(savedKey);
-  }
-
-  saveKeyBtn.addEventListener("click", () => {
-    const key = apiKeyInput.value.trim();
-    if (!key) {
-      showKeyStatus("Please paste your Gemini API key.", "error");
-      return;
-    }
-    chrome.storage.local.set({ geminiApiKey: key }, () => {
-      showKeyConfigured(key);
-    });
-  });
-
-  editKeyBtn.addEventListener("click", () => {
-    apiKeyInput.value = "";
-    apiKeyInputRow.classList.remove("hidden");
-    editKeyBtn.setAttribute("hidden", "true");
-    apiKeyStatus.classList.add("hidden");
-    apiKeyLabel.textContent = "Gemini API Key";
-  });
-
-  function showKeyConfigured(key) {
-    const masked = key.slice(0, 6) + "•".repeat(10) + key.slice(-4);
-    apiKeyLabel.textContent = `API Key: ${masked}`;
-    apiKeyInputRow.classList.add("hidden");
-    editKeyBtn.removeAttribute("hidden");
-    showKeyStatus("✓ API key saved. Gemini Vision enabled.", "success");
-  }
-
-  function showKeyStatus(msg, type) {
-    apiKeyStatus.textContent = msg;
-    apiKeyStatus.className = `api-key-status ${type}`;
-    apiKeyStatus.classList.remove("hidden");
-  }
 
   // ── Search Input ────────────────────────────────────────
   searchInput.addEventListener("input", () => {
@@ -109,12 +63,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     e.preventDefault();
     const query = searchInput.value.trim();
     if (!query) return;
-
-    const key = await new Promise(r => chrome.storage.local.get(["geminiApiKey"], res => r(res.geminiApiKey)));
-    if (!key) {
-      showKeyStatus("⚠ Enter your Gemini API key first!", "error");
-      return;
-    }
 
     const url = `https://www.meesho.com/search?q=${encodeURIComponent(query)}`;
     await chrome.storage.local.set({
