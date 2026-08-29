@@ -1,13 +1,11 @@
-// Background service worker: select product-gallery images and read their
+// Background service worker v5.8.0: select product-gallery images and read their
 // supplier-code watermark through Google Lens' "Select text" mode.
 
 const TAB_TIMEOUT_MS = 30000;
 const HYDRATION_WAIT_MS = 1500;
 const LENS_WAIT_MS = 3500;
 const MAX_GALLERY_IMAGES = 3;
-const WATERMARK_LEFT_FRACTION = 0.6;
-const WATERMARK_TOP_FRACTION = 0.74;
-const WATERMARK_SCALE = 4;
+const WATERMARK_SCALE = 2;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -28,10 +26,16 @@ async function cropWatermarkForLens(imageUrl) {
   if (!response.ok) throw new Error(`Image download failed (${response.status})`);
 
   const bitmap = await createImageBitmap(await response.blob());
+  const W = bitmap.width;
+  const H = bitmap.height;
+
+  // Capture the full bottom 30% strip across 100% of image width
+  // This guarantees wide or offset watermarks are completely included without cutoffs
+  const cropHeight = Math.min(350, Math.max(120, Math.floor(H * 0.30)));
+  const cropY = H - cropHeight;
   const cropX = 0;
-  const cropY = Math.floor(bitmap.height * WATERMARK_TOP_FRACTION);
-  const cropWidth = Math.max(1, Math.floor(bitmap.width * WATERMARK_LEFT_FRACTION));
-  const cropHeight = Math.max(1, bitmap.height - cropY);
+  const cropWidth = W;
+
   const canvas = new OffscreenCanvas(cropWidth * WATERMARK_SCALE, cropHeight * WATERMARK_SCALE);
   const context = canvas.getContext("2d");
   context.imageSmoothingEnabled = true;
@@ -189,18 +193,22 @@ async function getCodeFromGoogleLens(imageUrls) {
 
           const findCode = (text) => {
             if (!text) return null;
-            // 1) Direct s-code pattern: s- followed by digits/dots/dashes (e.g. s-170211462 or s-1.7021.1.462)
-            const sMatch = String(text).match(/(?:^|[^a-z0-9])s\s*[-_–—\.]?\s*([\d\.\-_–—]{5,15})(?=$|[^a-z0-9])/i);
+            const str = String(text).trim();
+
+            // 1) Direct s-code pattern: s- followed by 5-15 digits (e.g. s-170211462, s-537307277, s - 452654917)
+            const sMatch = str.match(/(?:^|[^a-z0-9])s\s*[-_–—\.\s]?\s*(\d{5,15})(?=$|[^a-z0-9])/i);
             if (sMatch) {
-              const digitsOnly = sMatch[1].replace(/\D/g, "");
-              if (digitsOnly.length >= 5) return `s-${digitsOnly}`;
+              const digits = sMatch[1].replace(/\D/g, "");
+              if (digits.length >= 5) return `s-${digits}`;
             }
 
-            // 2) Code displayed as dot-separated digits (e.g. 1.7021.1.462 in Lens header)
-            const digitsOnly = String(text).replace(/\D/g, "");
-            if (digitsOnly.length >= 6 && digitsOnly.length <= 12) {
-              return `s-${digitsOnly}`;
+            // 2) s-code where 's' was OCR-read as '$', '5', or '1.' (e.g. "1.7021.1.462" -> s-170211462)
+            const altMatch = str.match(/(?:^|[^a-z0-9])(?:[sS5$]|1\.)\s*[-_–—\.\s]?\s*([\d\.\-_–—]{6,15})(?=$|[^a-z0-9])/i);
+            if (altMatch) {
+              const digits = altMatch[1].replace(/\D/g, "");
+              if (digits.length >= 6 && digits.length <= 12) return `s-${digits}`;
             }
+
             return null;
           };
 
@@ -227,7 +235,7 @@ async function getCodeFromGoogleLens(imageUrls) {
           );
           const codeOverlayEl = ocrElements.find((el) => {
             const txt = (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim();
-            return /\d{5,}/.test(txt);
+            return /\d{5,}/.test(txt) && /[sS1$]/.test(txt);
           });
 
           if (codeOverlayEl) {
@@ -273,19 +281,19 @@ async function getCodeFromGoogleLens(imageUrls) {
 
           // Step 4: Extract text ONLY from the image overlay & header card
           const getImageTextOnly = () => {
-            // Source A: Lens top header query field next to thumbnail (e.g. "1.7021.1.462")
-            const headerInputs = Array.from(document.querySelectorAll('input[value], textarea[value], [role="combobox"] input'));
-            for (const input of headerInputs) {
-              const val = (input.value || "").trim();
-              if (val && !/search|lens|http/i.test(val) && /\d{5,}/.test(val)) {
-                return val;
-              }
-            }
-
-            // Source B: Active window text selection inside Lens image region
+            // Source A: Active window text selection inside Lens image region
             const selText = window.getSelection()?.toString()?.trim();
             if (selText && selText.length > 0 && !/select text|copy|listen|search|visual matches/i.test(selText)) {
               return selText;
+            }
+
+            // Source B: Lens top header query field next to thumbnail ONLY if it matches a code pattern
+            const headerInputs = Array.from(document.querySelectorAll('input[value], textarea[value], [role="combobox"] input'));
+            for (const input of headerInputs) {
+              const val = (input.value || "").trim();
+              if (val && !/search|lens|http/i.test(val) && (findCode(val) || (/[sS1\$]/.test(val) && /\d{5,}/.test(val)))) {
+                return val;
+              }
             }
 
             // Source C: Image card text elements (STRICTLY excluding AI Overview & Visual Matches)
@@ -308,7 +316,7 @@ async function getCodeFromGoogleLens(imageUrls) {
               });
 
             if (extractedWords.length > 0) {
-              const codeLine = extractedWords.find((w) => /\d{5,}/.test(w));
+              const codeLine = extractedWords.find((w) => findCode(w) || (/[sS1\$]/.test(w) && /\d{5,}/.test(w)));
               if (codeLine) return codeLine;
               return Array.from(new Set(extractedWords)).join(" ");
             }
