@@ -1,11 +1,18 @@
-// Background service worker v5.8.0: select product-gallery images and read their
+// Background service worker v5.9.0: select product-gallery images and read their
 // supplier-code watermark through Google Lens' "Select text" mode.
 
 const TAB_TIMEOUT_MS = 30000;
 const HYDRATION_WAIT_MS = 1500;
-const LENS_WAIT_MS = 3500;
+const LENS_WAIT_MS = 4000;
 const MAX_GALLERY_IMAGES = 3;
-const WATERMARK_SCALE = 2;
+
+// Watermark is always at the BOTTOM-LEFT corner of the product image.
+// Based on a 588px tall reference image, the watermark occupies ~204px wide × 40px tall.
+// That maps to roughly the left 38% width and bottom 7% of the image height.
+// We crop EXACTLY that region and scale it up 6× for clear OCR.
+const WATERMARK_WIDTH_FRACTION  = 0.38;  // left 38% of image width
+const WATERMARK_HEIGHT_FRACTION = 0.08;  // bottom 8% of image height (covers ~47px in a 588px image)
+const WATERMARK_SCALE = 6;               // scale up heavily for Google Lens OCR clarity
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -29,28 +36,31 @@ async function cropWatermarkForLens(imageUrl) {
   const W = bitmap.width;
   const H = bitmap.height;
 
-  // Capture the full bottom 30% strip across 100% of image width
-  // This guarantees wide or offset watermarks are completely included without cutoffs
-  const cropHeight = Math.min(350, Math.max(120, Math.floor(H * 0.30)));
-  const cropY = H - cropHeight;
+  // Crop precisely: bottom-left region only
+  const cropW = Math.max(1, Math.floor(W * WATERMARK_WIDTH_FRACTION));
+  const cropH = Math.max(1, Math.floor(H * WATERMARK_HEIGHT_FRACTION));
   const cropX = 0;
-  const cropWidth = W;
+  const cropY = H - cropH;
 
-  const canvas = new OffscreenCanvas(cropWidth * WATERMARK_SCALE, cropHeight * WATERMARK_SCALE);
+  // Scale up heavily so Google Lens can read the small text clearly
+  const outW = cropW * WATERMARK_SCALE;
+  const outH = cropH * WATERMARK_SCALE;
+
+  const canvas = new OffscreenCanvas(outW, outH);
   const context = canvas.getContext("2d");
+  // White background so transparent PNGs don't go dark
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, outW, outH);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  context.drawImage(
-    bitmap,
-    cropX, cropY, cropWidth, cropHeight,
-    0, 0, canvas.width, canvas.height,
-  );
+  context.drawImage(bitmap, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
   bitmap.close();
+
   const png = await canvas.convertToBlob({ type: "image/png" });
   return {
     imageBase64: toBase64(await png.arrayBuffer()),
-    width: canvas.width,
-    height: canvas.height,
+    width: outW,
+    height: outH,
   };
 }
 
@@ -189,149 +199,87 @@ async function getCodeFromGoogleLens(imageUrls) {
       const result = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: async () => {
-          const sleepInPage = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const sleepInPage = (ms) => new Promise((r) => setTimeout(r, ms));
 
+          // ---- CAPTCHA guard ----
+          if (/captcha|unusual traffic|not a robot/i.test(document.body?.innerText || "")) {
+            return { code: null, extractedText: null, error: "Google Lens CAPTCHA" };
+          }
+
+          // ---- Helper: extract real s-code from a string ----
           const findCode = (text) => {
             if (!text) return null;
-            const str = String(text).trim();
-
-            // 1) Direct s-code pattern: s- followed by 5-15 digits (e.g. s-170211462, s-537307277, s - 452654917)
-            const sMatch = str.match(/(?:^|[^a-z0-9])s\s*[-_–—\.\s]?\s*(\d{5,15})(?=$|[^a-z0-9])/i);
-            if (sMatch) {
-              const digits = sMatch[1].replace(/\D/g, "");
-              if (digits.length >= 5) return `s-${digits}`;
+            const s = String(text);
+            // Primary: literal "s" or "S" prefix followed by digits (with optional separator)
+            const m1 = s.match(/(?:^|\s|[^a-zA-Z0-9])[sS]\s*[-–—_.]?\s*(\d{6,12})(?=[^0-9]|$)/);
+            if (m1) return `s-${m1[1]}`;
+            // Secondary: OCR misread of 's' as '1.' e.g. "1.7021.1.462" => s-170211462
+            const m2 = s.match(/(?:^|\s)1[._](\d[\d._]{4,12})(?=[^0-9]|$)/);
+            if (m2) {
+              const digits = m2[1].replace(/\D/g, "");
+              if (digits.length >= 5 && digits.length <= 12) return `s-1${digits}`;
             }
-
-            // 2) s-code where 's' was OCR-read as '$', '5', or '1.' (e.g. "1.7021.1.462" -> s-170211462)
-            const altMatch = str.match(/(?:^|[^a-z0-9])(?:[sS5$]|1\.)\s*[-_–—\.\s]?\s*([\d\.\-_–—]{6,15})(?=$|[^a-z0-9])/i);
-            if (altMatch) {
-              const digits = altMatch[1].replace(/\D/g, "");
-              if (digits.length >= 6 && digits.length <= 12) return `s-${digits}`;
-            }
-
             return null;
           };
 
-          const pageText = () => document.body?.innerText || "";
-          if (/captcha|unusual traffic|not a robot/i.test(pageText())) {
-            return { code: null, extractedText: null, error: "Google Lens requested a CAPTCHA" };
-          }
-
-          // Step 1: Click "Select text" button if present
-          for (let attempt = 0; attempt < 8; attempt += 1) {
-            const target = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
-              .find((element) => element.textContent?.trim().toLowerCase() === "select text");
-            if (target) {
-              (target.closest('button, [role="button"], a') || target).click();
+          // ---- Step 1: Click "Select text" tab in Lens ----
+          let foundSelectText = false;
+          for (let i = 0; i < 12; i++) {
+            const btn = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], div, span'))
+              .find((el) => el.textContent?.trim().toLowerCase() === "select text");
+            if (btn) {
+              (btn.closest('button,[role="button"],[role="tab"]') || btn).click();
+              foundSelectText = true;
               break;
             }
-            await sleepInPage(400);
+            await sleepInPage(500);
           }
-          await sleepInPage(500);
+          if (!foundSelectText) return { code: null, extractedText: null, error: "Select text button not found" };
+          await sleepInPage(1000);
 
-          // Step 2: Click directly on the code location in the image viewer
-          const ocrElements = Array.from(
-            document.querySelectorAll('[data-text], [data-string], .gws-lens-panes__text-region, [role="region"] span, .c2miie, .V4v0ee, .y24T4d')
-          );
-          const codeOverlayEl = ocrElements.find((el) => {
-            const txt = (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim();
-            return /\d{5,}/.test(txt) && /[sS1$]/.test(txt);
-          });
-
-          if (codeOverlayEl) {
-            const rect = codeOverlayEl.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
-            codeOverlayEl.dispatchEvent(new MouseEvent("mousedown", opts));
-            codeOverlayEl.dispatchEvent(new MouseEvent("mouseup", opts));
-            codeOverlayEl.click();
+          // ---- Step 2: Click "Select all" to select all OCR text in the image ----
+          const selectAll = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
+            .find((el) => /^select all(\s+text)?$/i.test(el.textContent?.trim() || ""));
+          if (selectAll) {
+            (selectAll.closest('button,[role="button"]') || selectAll).click();
+            await sleepInPage(800);
           } else {
-            const imgEl = document.querySelector('img[src^="blob:"], canvas, .gws-lens-panes__image-pane img, [role="region"] img');
+            // Fallback: click in the bottom-left of the image where the watermark is
+            const imgEl = document.querySelector(
+              '.gws-lens-panes__image-pane img, [role="region"] img, img[src^="blob:"], canvas'
+            );
             if (imgEl) {
-              const rect = imgEl.getBoundingClientRect();
-              const x = rect.left + rect.width * 0.35;
-              const y = rect.top + rect.height * 0.7;
-              const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
-              imgEl.dispatchEvent(new MouseEvent("mousedown", opts));
-              imgEl.dispatchEvent(new MouseEvent("mouseup", opts));
-              imgEl.click();
-            }
-          }
-          await sleepInPage(500);
-
-          // Step 3: Click "Copy" / "Copy text" floating menu button
-          const copyBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
-            .find((element) => {
-              const text = element.textContent?.trim().toLowerCase() || element.getAttribute("aria-label")?.trim().toLowerCase() || "";
-              return text === "copy" || text === "copy text" || text === "copy selection";
-            });
-
-          if (copyBtn) {
-            (copyBtn.closest('button, [role="button"], a') || copyBtn).click();
-            await sleepInPage(400);
-          } else {
-            const selectAllBtn = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'))
-              .find((element) => /^(select all|select all text)$/i.test(element.textContent?.trim() || ""));
-            if (selectAllBtn) {
-              (selectAllBtn.closest('button, [role="button"], a') || selectAllBtn).click();
-              await sleepInPage(400);
+              const r = imgEl.getBoundingClientRect();
+              // Bottom-left corner: 20% from left, 88% from top
+              const cx = r.left + r.width * 0.20;
+              const cy = r.top  + r.height * 0.88;
+              const ev = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
+              imgEl.dispatchEvent(new MouseEvent("mousedown", ev));
+              imgEl.dispatchEvent(new MouseEvent("mouseup", ev));
+              await sleepInPage(600);
+              // Now try Select all again
+              const sa2 = Array.from(document.querySelectorAll('button,[role="button"],div,span'))
+                .find((el) => /^select all/i.test(el.textContent?.trim() || ""));
+              if (sa2) { (sa2.closest('button,[role="button"]') || sa2).click(); await sleepInPage(600); }
             }
           }
 
-          // Step 4: Extract text ONLY from the image overlay & header card
-          const getImageTextOnly = () => {
-            // Source A: Active window text selection inside Lens image region
-            const selText = window.getSelection()?.toString()?.trim();
-            if (selText && selText.length > 0 && !/select text|copy|listen|search|visual matches/i.test(selText)) {
-              return selText;
-            }
+          // ---- Step 3: Read the SELECTION (the ONLY trusted source) ----
+          const selected = window.getSelection()?.toString()?.trim() || "";
 
-            // Source B: Lens top header query field next to thumbnail ONLY if it matches a code pattern
-            const headerInputs = Array.from(document.querySelectorAll('input[value], textarea[value], [role="combobox"] input'));
-            for (const input of headerInputs) {
-              const val = (input.value || "").trim();
-              if (val && !/search|lens|http/i.test(val) && (findCode(val) || (/[sS1\$]/.test(val) && /\d{5,}/.test(val)))) {
-                return val;
-              }
-            }
-
-            // Source C: Image card text elements (STRICTLY excluding AI Overview & Visual Matches)
-            const cardRegion = document.querySelector('[role="dialog"], [role="region"], .gws-lens-panes__image-pane') || document.body;
-            const candidateElements = Array.from(
-              cardRegion.querySelectorAll('[data-text], [data-string], span, div')
-            ).filter((el) => {
-              if (el.closest('[aria-label*="AI Overview"i], [aria-label*="Visual matches"i], #rso, .g, [data-attr*="ai"]')) {
-                return false;
-              }
-              return true;
+          // ---- Step 4: Try clicking Copy to get clipboard (belt & suspenders) ----
+          const copyBtn = Array.from(document.querySelectorAll('button,[role="button"],div,span'))
+            .find((el) => {
+              const t = (el.textContent?.trim() || el.getAttribute("aria-label") || "").toLowerCase();
+              return t === "copy" || t === "copy text";
             });
+          if (copyBtn) { (copyBtn.closest('button,[role="button"]') || copyBtn).click(); await sleepInPage(300); }
 
-            const extractedWords = candidateElements
-              .map((el) => (el.getAttribute("data-text") || el.getAttribute("data-string") || el.innerText || "").trim())
-              .filter((t) => {
-                if (!t || t.length < 2) return false;
-                if (/select text|copy|listen|select all|search|visual matches|ask anything|sign in|ai overview|exact matches/i.test(t)) return false;
-                return true;
-              });
-
-            if (extractedWords.length > 0) {
-              const codeLine = extractedWords.find((w) => findCode(w) || (/[sS1\$]/.test(w) && /\d{5,}/.test(w)));
-              if (codeLine) return codeLine;
-              return Array.from(new Set(extractedWords)).join(" ");
-            }
-
-            return null;
-          };
-
-          const imageText = getImageTextOnly();
+          // ---- Finalise: use selection text, then find code ----
+          const imageText = selected || null;
           const isolatedCode = findCode(imageText);
 
-          return {
-            code: isolatedCode,
-            extractedText: imageText,
-            error: null,
-          };
+          return { code: isolatedCode, extractedText: imageText, error: null };
         },
       });
       const response = result?.[0]?.result;

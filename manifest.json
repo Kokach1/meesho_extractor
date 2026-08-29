@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Meesho Product Search & Rating Extractor",
-  "version": "5.8.0",
+  "version": "5.9.0",
   "description": "Uses Google Lens text recognition on rated product-gallery images to extract supplier codes.",
   "permissions": [
     "activeTab",
