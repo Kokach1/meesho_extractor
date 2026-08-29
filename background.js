@@ -195,7 +195,6 @@ async function getCodeFromGoogleLens(imageUrls) {
       });
       await uploadComplete;
       await sleep(LENS_WAIT_MS);
-
       const result = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: async () => {
@@ -210,21 +209,67 @@ async function getCodeFromGoogleLens(imageUrls) {
           const findCode = (text) => {
             if (!text) return null;
             const s = String(text);
-            // Primary: literal "s" or "S" prefix followed by digits (with optional separator)
-            const m1 = s.match(/(?:^|\s|[^a-zA-Z0-9])[sS]\s*[-–—_.]?\s*(\d{6,12})(?=[^0-9]|$)/);
+            // Primary: literal "s" or "S" prefix followed by 6-12 digits
+            const m1 = s.match(/(?:^|\s|[^a-zA-Z0-9])[sS]\s*[-–—_.·]?\s*(\d{6,12})(?=[^0-9]|$)/);
             if (m1) return `s-${m1[1]}`;
-            // Secondary: OCR misread of 's' as '1.' e.g. "1.7021.1.462" => s-170211462
-            const m2 = s.match(/(?:^|\s)1[._](\d[\d._]{4,12})(?=[^0-9]|$)/);
+            // Secondary: OCR misread where 's' becomes '1.' e.g. "1.7021.1.462" => s-170211462
+            const m2 = s.match(/(?:^|\s)1[._](\d[\d._]{4,11})(?=[^0-9]|$)/);
             if (m2) {
               const digits = m2[1].replace(/\D/g, "");
-              if (digits.length >= 5 && digits.length <= 12) return `s-1${digits}`;
+              if (digits.length >= 5 && digits.length <= 11) return `s-1${digits}`;
             }
             return null;
           };
 
+          // ---- Read ALL text from the Lens OCR overlay DOM elements ----
+          // This is the ONLY reliable method — selection API fails in Lens shadow DOM.
+          const readOcrTextFromDom = () => {
+            // Collect ALL candidate selectors Google Lens uses for OCR text overlays
+            const selectors = [
+              '[data-text]',
+              '[data-string]',
+              '.c2miie',
+              '.V4v0ee',
+              '.y24T4d',
+              '.gws-lens-panes__text-region',
+              '.LkNB4b',
+              '.Yt787',
+              '[jscontroller] [jsname] span[dir]',
+            ];
+
+            const seen = new Set();
+            const pieces = [];
+
+            for (const sel of selectors) {
+              try {
+                for (const el of document.querySelectorAll(sel)) {
+                  // Skip if inside a Visual Matches / AI Overview / search results section
+                  if (el.closest('#rso, .related-question-pair, [data-attrid], [jscontroller="buAone"]')) continue;
+
+                  const raw = (
+                    el.getAttribute("data-text") ||
+                    el.getAttribute("data-string") ||
+                    el.innerText ||
+                    el.textContent ||
+                    ""
+                  ).trim();
+
+                  if (!raw || raw.length < 2) continue;
+                  // Skip obvious UI strings
+                  if (/^(select text|copy|listen|translate|select all|search|visual matches|ask anything|sign in|feedback|more|close|back)$/i.test(raw)) continue;
+                  if (seen.has(raw)) continue;
+                  seen.add(raw);
+                  pieces.push(raw);
+                }
+              } catch (_) {}
+            }
+
+            return pieces.length > 0 ? pieces.join(" ") : null;
+          };
+
           // ---- Step 1: Click "Select text" tab in Lens ----
           let foundSelectText = false;
-          for (let i = 0; i < 12; i++) {
+          for (let i = 0; i < 14; i++) {
             const btn = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], div, span'))
               .find((el) => el.textContent?.trim().toLowerCase() === "select text");
             if (btn) {
@@ -234,49 +279,28 @@ async function getCodeFromGoogleLens(imageUrls) {
             }
             await sleepInPage(500);
           }
-          if (!foundSelectText) return { code: null, extractedText: null, error: "Select text button not found" };
-          await sleepInPage(1000);
+          // Even if we didn't find the button, try reading DOM anyway (it may already be in text mode)
+          await sleepInPage(1200);
 
-          // ---- Step 2: Click "Select all" to select all OCR text in the image ----
+          // ---- Step 2: Try "Select all" to ensure all OCR nodes are rendered ----
           const selectAll = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
             .find((el) => /^select all(\s+text)?$/i.test(el.textContent?.trim() || ""));
           if (selectAll) {
             (selectAll.closest('button,[role="button"]') || selectAll).click();
-            await sleepInPage(800);
-          } else {
-            // Fallback: click in the bottom-left of the image where the watermark is
-            const imgEl = document.querySelector(
-              '.gws-lens-panes__image-pane img, [role="region"] img, img[src^="blob:"], canvas'
-            );
-            if (imgEl) {
-              const r = imgEl.getBoundingClientRect();
-              // Bottom-left corner: 20% from left, 88% from top
-              const cx = r.left + r.width * 0.20;
-              const cy = r.top  + r.height * 0.88;
-              const ev = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
-              imgEl.dispatchEvent(new MouseEvent("mousedown", ev));
-              imgEl.dispatchEvent(new MouseEvent("mouseup", ev));
-              await sleepInPage(600);
-              // Now try Select all again
-              const sa2 = Array.from(document.querySelectorAll('button,[role="button"],div,span'))
-                .find((el) => /^select all/i.test(el.textContent?.trim() || ""));
-              if (sa2) { (sa2.closest('button,[role="button"]') || sa2).click(); await sleepInPage(600); }
+            await sleepInPage(600);
+          }
+
+          // ---- Step 3: Read text directly from OCR DOM overlay ----
+          let imageText = readOcrTextFromDom();
+
+          // ---- Step 4: If DOM read got nothing, try window.getSelection as last resort ----
+          if (!imageText) {
+            const sel = window.getSelection()?.toString()?.trim();
+            if (sel && sel.length > 1 && !/^(select|copy|listen|search)$/i.test(sel)) {
+              imageText = sel;
             }
           }
 
-          // ---- Step 3: Read the SELECTION (the ONLY trusted source) ----
-          const selected = window.getSelection()?.toString()?.trim() || "";
-
-          // ---- Step 4: Try clicking Copy to get clipboard (belt & suspenders) ----
-          const copyBtn = Array.from(document.querySelectorAll('button,[role="button"],div,span'))
-            .find((el) => {
-              const t = (el.textContent?.trim() || el.getAttribute("aria-label") || "").toLowerCase();
-              return t === "copy" || t === "copy text";
-            });
-          if (copyBtn) { (copyBtn.closest('button,[role="button"]') || copyBtn).click(); await sleepInPage(300); }
-
-          // ---- Finalise: use selection text, then find code ----
-          const imageText = selected || null;
           const isolatedCode = findCode(imageText);
 
           return { code: isolatedCode, extractedText: imageText, error: null };
