@@ -222,39 +222,36 @@ async function getCodeFromGoogleLens(imageUrls) {
           };
 
           // ---- Wait for page to fully render Lens results ----
-          // Google Lens now redirects to google.com/search?vsrid=... where
-          // the OCR output appears in the AI Overview and page text — no "Select text" needed.
-          await sleepInPage(2000);
+          await sleepInPage(2500);
 
           // ---- Read full page text ----
           const fullText = document.body?.innerText || "";
 
-          // ---- Extract the code from anywhere in the page ----
-          // The AI Overview text already contains the supplier code recognised in the image,
-          // e.g. "The image shows a product code or SKU number (s-594370800)"
+          // ---- Extract the s-code from the full page text ----
           const isolatedCode = findCode(fullText);
 
-          // ---- Build a clean "Lens output" summary ----
-          // Grab just the first few meaningful lines (AI Overview + image label near thumbnail)
+          // ---- Build full Lens output text ----
+          // Grab all meaningful lines from the page (AI Overview + related content)
           const lensOutput = (() => {
-            // Try to get the text shown in the image card area / query label
-            const queryInputs = Array.from(document.querySelectorAll('input[aria-label], textarea[aria-label], [role="combobox"] input'));
-            for (const inp of queryInputs) {
-              const val = (inp.value || inp.getAttribute("aria-label") || "").trim();
-              if (val && val.length > 1 && !/^(search|google)/i.test(val)) return val;
-            }
-
-            // Fallback: grab first paragraph-like text on the page that contains a code
             const lines = fullText.split("\n")
               .map((l) => l.trim())
-              .filter((l) => l.length > 4 && !/^(google|sign in|settings|search)/i.test(l));
+              .filter((l) => {
+                if (!l || l.length < 3) return false;
+                // Skip pure Google UI chrome
+                if (/^(google|sign in|settings|search|images|shopping|maps|news|more|tools|all|feedback|report)$/i.test(l)) return false;
+                if (/^(show more|show all|about this result|privacy|terms)$/i.test(l)) return false;
+                return true;
+              });
 
-            // Prefer any line that contains our supplier code pattern
-            const codeLine = lines.find((l) => findCode(l));
-            if (codeLine) return codeLine;
+            // Deduplicate while preserving order
+            const seen = new Set();
+            const unique = lines.filter((l) => {
+              if (seen.has(l)) return false;
+              seen.add(l);
+              return true;
+            });
 
-            // Otherwise return first 3 non-trivial lines joined
-            return lines.slice(0, 3).join(" ") || null;
+            return unique.join("\n") || null;
           })();
 
           return { code: isolatedCode, extractedText: lensOutput, error: null };

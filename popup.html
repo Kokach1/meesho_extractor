@@ -3,22 +3,32 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Meesho Search & Rating Filter Extractor v5.11.0</title>
+  <title>Meesho Lens Extractor v5.12.0</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="extension-container">
+
     <!-- Header -->
     <header class="header">
       <div class="brand">
         <div class="logo-badge">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M4 19V5L12 12.5L20 5V19" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" fill="url(#lg1)"/>
+            <path d="M8 12l3 3 5-5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="lg1" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#f43397"/>
+                <stop offset="100%" stop-color="#7c3aed"/>
+              </linearGradient>
+            </defs>
           </svg>
         </div>
         <div class="brand-text">
-          <h1 class="app-title">Meesho Extractor</h1>
-          <span class="app-subtitle">&gt;4.0 Rating + Google Lens</span>
+          <h1 class="app-title">Meesho <span class="title-accent">Lens</span> Extractor</h1>
+          <span class="app-subtitle">Google Lens · Rating &gt;4.0 · Supplier Codes</span>
         </div>
       </div>
       <span class="active-badge" id="active-badge">Active Tab</span>
@@ -27,33 +37,32 @@
     <!-- Main Content -->
     <main class="main-content">
 
-
-      <!-- Search Form View -->
+      <!-- Search Form -->
       <section id="search-section" class="section">
         <form id="search-form" class="search-form" autocomplete="off">
           <div class="input-wrapper">
-            <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
               <circle cx="11" cy="11" r="8"></circle>
               <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
             </svg>
-            <input type="text" id="search-input" class="search-input" placeholder="Enter product name..." autofocus required />
+            <input type="text" id="search-input" class="search-input" placeholder="Search product on Meesho..." autofocus required />
             <button type="button" id="clear-btn" class="clear-btn" aria-label="Clear input" hidden>&times;</button>
           </div>
           <button type="submit" id="search-button" class="btn-primary">
-            <span>Search Meesho</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <line x1="5" y1="12" x2="19" y2="12"></line>
               <polyline points="12 5 19 12 12 19"></polyline>
             </svg>
+            <span>Search Meesho</span>
           </button>
         </form>
       </section>
 
-      <!-- Error view if not on Meesho -->
+      <!-- Error view -->
       <section id="error-view" class="section hidden">
         <div class="error-card">
-          <div class="error-icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="2">
+          <div class="error-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="12" y1="8" x2="12" y2="12"></line>
               <line x1="12" y1="16" x2="12.01" y2="16"></line>
@@ -64,23 +73,24 @@
         </div>
       </section>
 
-      <!-- Extractor Dashboard Controls -->
+      <!-- Extractor Controls -->
       <section id="extractor-controls" class="section">
         <div class="control-actions">
           <button type="button" id="start-extract-btn" class="btn-action btn-start">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <polygon points="5 3 19 12 5 21 5 3"></polygon>
             </svg>
             <span>Start Extraction</span>
           </button>
           <button type="button" id="stop-extract-btn" class="btn-action btn-stop" disabled>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <rect x="6" y="6" width="12" height="12" rx="2"></rect>
             </svg>
-            <span>Stop Extraction</span>
+            <span>Stop</span>
           </button>
         </div>
 
+        <!-- Status Banner -->
         <div class="status-banner">
           <div class="status-header">
             <span class="status-dot" id="status-dot"></span>
@@ -92,47 +102,61 @@
               <span id="stat-scanned" class="stat-value">0</span>
             </div>
             <div class="stat-box highlight">
-              <span class="stat-label">Matching (>4.0 ★)</span>
+              <span class="stat-label">Matched (&gt;4.0 ★)</span>
               <span id="stat-matching" class="stat-value">0</span>
             </div>
           </div>
         </div>
 
+        <!-- Export Bar -->
         <div class="export-bar">
           <button type="button" id="export-excel-btn" class="btn-export" disabled>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
               <polyline points="14 2 14 8 20 8"></polyline>
               <line x1="16" y1="13" x2="8" y2="13"></line>
               <line x1="16" y1="17" x2="8" y2="17"></line>
             </svg>
-            <span>Export to Excel</span>
+            <span>Export Excel</span>
           </button>
-          <span id="export-status-text" class="export-status-text">0 products ready for export</span>
+          <span id="export-status-text" class="export-status-text">0 products ready</span>
         </div>
       </section>
 
-      <!-- Results Table View -->
+      <!-- Results Table -->
       <section id="results-section" class="section">
         <div class="results-header">
-          <h2 class="results-title">Extracted Products</h2>
-          <span id="results-count-badge" class="count-badge">0 items</span>
+          <div class="results-title-group">
+            <h2 class="results-title">Results</h2>
+            <span id="results-count-badge" class="count-badge">0 items</span>
+          </div>
+          <span class="lens-tag">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            Google Lens
+          </span>
         </div>
         <div class="results-scroll-container">
           <table class="results-table">
             <thead>
               <tr>
-                <th>Product Name</th>
-                <th>Price</th>
-                <th>Type</th>
-                <th>Rating</th>
-                <th>Code</th>
-                <th>Link</th>
+                <th class="col-img">Img</th>
+                <th class="col-name">Product</th>
+                <th class="col-price">Price</th>
+                <th class="col-rating">Rating</th>
+                <th class="col-code">Code</th>
+                <th class="col-link">Link</th>
               </tr>
             </thead>
             <tbody id="results-table-body">
               <tr class="empty-row">
-                <td colspan="6">No products with &gt;4.0 rating yet. Enter a product name to search — codes are extracted with Google Lens.</td>
+                <td colspan="6">
+                  <div class="empty-state">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+                      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                    <span>No results yet. Search a product and start extraction.</span>
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -142,7 +166,11 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>Meesho Extractor v5.11.0 (Google Lens text extraction)</span>
+      <span class="footer-version">v5.12.0</span>
+      <span class="footer-sep">·</span>
+      <span>Meesho Lens Extractor</span>
+      <span class="footer-sep">·</span>
+      <span>Google Lens OCR</span>
     </footer>
   </div>
 

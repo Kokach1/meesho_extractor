@@ -164,11 +164,16 @@
       line.length > 3 && !line.includes("₹") && !line.includes("Free Delivery") && !/\b[1-5](?:\.\d)?\b/.test(line),
     ) || "Meesho Product";
 
+    // Grab product thumbnail from the card
+    const imgEl = card.querySelector("img[src]");
+    const imageUrl = imgEl?.src || imgEl?.currentSrc || null;
+
     return {
       product_name: productName.replace(/\s+/g, " "),
       price: priceMatch ? priceMatch[0].replace(/\s+/g, "") : "N/A",
       type: "General",
       product_link: productLink,
+      image_url: imageUrl,
       rating,
       isolated_code: null,
       lens_text: null,
