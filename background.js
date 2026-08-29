@@ -209,10 +209,10 @@ async function getCodeFromGoogleLens(imageUrls) {
           const findCode = (text) => {
             if (!text) return null;
             const s = String(text);
-            // Primary: literal "s" or "S" prefix followed by 6-12 digits
+            // Primary: s- or S- prefix followed by 6-12 digits
             const m1 = s.match(/(?:^|\s|[^a-zA-Z0-9])[sS]\s*[-–—_.·]?\s*(\d{6,12})(?=[^0-9]|$)/);
             if (m1) return `s-${m1[1]}`;
-            // Secondary: OCR misread where 's' becomes '1.' e.g. "1.7021.1.462" => s-170211462
+            // Secondary: OCR misread of 's' as '1.' e.g. "1.7021.1.462"
             const m2 = s.match(/(?:^|\s)1[._](\d[\d._]{4,11})(?=[^0-9]|$)/);
             if (m2) {
               const digits = m2[1].replace(/\D/g, "");
@@ -221,89 +221,43 @@ async function getCodeFromGoogleLens(imageUrls) {
             return null;
           };
 
-          // ---- Read ALL text from the Lens OCR overlay DOM elements ----
-          // This is the ONLY reliable method — selection API fails in Lens shadow DOM.
-          const readOcrTextFromDom = () => {
-            // Collect ALL candidate selectors Google Lens uses for OCR text overlays
-            const selectors = [
-              '[data-text]',
-              '[data-string]',
-              '.c2miie',
-              '.V4v0ee',
-              '.y24T4d',
-              '.gws-lens-panes__text-region',
-              '.LkNB4b',
-              '.Yt787',
-              '[jscontroller] [jsname] span[dir]',
-            ];
+          // ---- Wait for page to fully render Lens results ----
+          // Google Lens now redirects to google.com/search?vsrid=... where
+          // the OCR output appears in the AI Overview and page text — no "Select text" needed.
+          await sleepInPage(2000);
 
-            const seen = new Set();
-            const pieces = [];
+          // ---- Read full page text ----
+          const fullText = document.body?.innerText || "";
 
-            for (const sel of selectors) {
-              try {
-                for (const el of document.querySelectorAll(sel)) {
-                  // Skip if inside a Visual Matches / AI Overview / search results section
-                  if (el.closest('#rso, .related-question-pair, [data-attrid], [jscontroller="buAone"]')) continue;
+          // ---- Extract the code from anywhere in the page ----
+          // The AI Overview text already contains the supplier code recognised in the image,
+          // e.g. "The image shows a product code or SKU number (s-594370800)"
+          const isolatedCode = findCode(fullText);
 
-                  const raw = (
-                    el.getAttribute("data-text") ||
-                    el.getAttribute("data-string") ||
-                    el.innerText ||
-                    el.textContent ||
-                    ""
-                  ).trim();
-
-                  if (!raw || raw.length < 2) continue;
-                  // Skip obvious UI strings
-                  if (/^(select text|copy|listen|translate|select all|search|visual matches|ask anything|sign in|feedback|more|close|back)$/i.test(raw)) continue;
-                  if (seen.has(raw)) continue;
-                  seen.add(raw);
-                  pieces.push(raw);
-                }
-              } catch (_) {}
+          // ---- Build a clean "Lens output" summary ----
+          // Grab just the first few meaningful lines (AI Overview + image label near thumbnail)
+          const lensOutput = (() => {
+            // Try to get the text shown in the image card area / query label
+            const queryInputs = Array.from(document.querySelectorAll('input[aria-label], textarea[aria-label], [role="combobox"] input'));
+            for (const inp of queryInputs) {
+              const val = (inp.value || inp.getAttribute("aria-label") || "").trim();
+              if (val && val.length > 1 && !/^(search|google)/i.test(val)) return val;
             }
 
-            return pieces.length > 0 ? pieces.join(" ") : null;
-          };
+            // Fallback: grab first paragraph-like text on the page that contains a code
+            const lines = fullText.split("\n")
+              .map((l) => l.trim())
+              .filter((l) => l.length > 4 && !/^(google|sign in|settings|search)/i.test(l));
 
-          // ---- Step 1: Click "Select text" tab in Lens ----
-          let foundSelectText = false;
-          for (let i = 0; i < 14; i++) {
-            const btn = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], div, span'))
-              .find((el) => el.textContent?.trim().toLowerCase() === "select text");
-            if (btn) {
-              (btn.closest('button,[role="button"],[role="tab"]') || btn).click();
-              foundSelectText = true;
-              break;
-            }
-            await sleepInPage(500);
-          }
-          // Even if we didn't find the button, try reading DOM anyway (it may already be in text mode)
-          await sleepInPage(1200);
+            // Prefer any line that contains our supplier code pattern
+            const codeLine = lines.find((l) => findCode(l));
+            if (codeLine) return codeLine;
 
-          // ---- Step 2: Try "Select all" to ensure all OCR nodes are rendered ----
-          const selectAll = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
-            .find((el) => /^select all(\s+text)?$/i.test(el.textContent?.trim() || ""));
-          if (selectAll) {
-            (selectAll.closest('button,[role="button"]') || selectAll).click();
-            await sleepInPage(600);
-          }
+            // Otherwise return first 3 non-trivial lines joined
+            return lines.slice(0, 3).join(" ") || null;
+          })();
 
-          // ---- Step 3: Read text directly from OCR DOM overlay ----
-          let imageText = readOcrTextFromDom();
-
-          // ---- Step 4: If DOM read got nothing, try window.getSelection as last resort ----
-          if (!imageText) {
-            const sel = window.getSelection()?.toString()?.trim();
-            if (sel && sel.length > 1 && !/^(select|copy|listen|search)$/i.test(sel)) {
-              imageText = sel;
-            }
-          }
-
-          const isolatedCode = findCode(imageText);
-
-          return { code: isolatedCode, extractedText: imageText, error: null };
+          return { code: isolatedCode, extractedText: lensOutput, error: null };
         },
       });
       const response = result?.[0]?.result;

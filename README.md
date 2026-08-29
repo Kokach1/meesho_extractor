@@ -1,4 +1,4 @@
-# Meesho Product Rating & Supplier-Code Extractor (v5.10.0)
+# Meesho Product Rating & Supplier-Code Extractor (v5.11.0)
 
 This Chrome extension scans Meesho search results, keeps products rated above 4.0, and uses Google Lens to read supplier-code watermarks such as `s-452654917` from product images. Results can be exported to Excel.
 
